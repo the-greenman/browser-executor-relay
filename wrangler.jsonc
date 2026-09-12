@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "browser-executor-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-12",
+  "observability": {
+    "enabled": false,
+    "redact_query_string": true,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false,
+      "persist": false,
+      "destinations": []
+    },
+    "traces": {
+      "enabled": false,
+      "persist": false,
+      "destinations": []
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "RELAY_CHANNEL", "class_name": "RelayChannel" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RelayChannel"] }
+  ]
+}

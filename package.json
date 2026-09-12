@@ -1,0 +1,20 @@
+{
+  "name": "browser-executor-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stateless generic HTTP caller to browser WebSocket executor relay for Cloudflare Workers",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.8",
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.124.0"
+  }
+}
