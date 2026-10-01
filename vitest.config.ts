@@ -9,6 +9,8 @@ export default defineConfig({
         bindings: {
           RELAY_HMAC_KEY: "test-relay-hmac-key",
           EXECUTOR_ORIGIN: "https://app.example",
+          DEADLINE_MS: "300",
+          MAX_PENDING_CALLS: "12",
         },
       },
     }),

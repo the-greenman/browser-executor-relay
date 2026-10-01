@@ -18,6 +18,14 @@ export interface Env {
   RELAY_HMAC_KEY: string;
   /** Optional exact browser origin for executor WebSocket upgrades. */
   EXECUTOR_ORIGIN?: string;
+  /** Optional overrides of DEFAULT_LIMITS (positive integers); mainly for tests. */
+  DEADLINE_MS?: string;
+  MAX_PENDING_CALLS?: string;
+}
+
+function limit(value: string | undefined, fallback: number): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
 const JSON_HEADERS = {
@@ -60,6 +68,14 @@ function executorOriginAllowed(request: Request, env: Env): boolean {
   return Boolean(env.EXECUTOR_ORIGIN && origin === env.EXECUTOR_ORIGIN);
 }
 
+/** Browsers cannot set WebSocket upgrade headers, so query params are accepted; headers serve non-browser executors. Never logged. */
+function executorParams(request: Request): { generation: string | null; takeover: boolean } {
+  const url = new URL(request.url);
+  const generation = url.searchParams.get("generation") ?? request.headers.get("x-relay-executor-generation");
+  const takeover = (url.searchParams.get("takeover") ?? request.headers.get("x-relay-executor-takeover")) === "true";
+  return { generation, takeover };
+}
+
 async function bootstrap(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return notAllowed("POST");
   const channel = randomBase64Url(32);
@@ -80,9 +96,8 @@ async function routeExecutor(request: Request, env: Env): Promise<Response> {
   if (!executorOriginAllowed(request, env)) return errorResponse(403, "executor_origin_forbidden");
   const authenticated = await authenticatedChannel(request, env, "executor");
   if (!authenticated) return errorResponse(403, "invalid_credential");
-  const generation = request.headers.get("x-relay-executor-generation");
+  const { generation, takeover } = executorParams(request);
   if (!generation || !/^[A-Za-z0-9_-]{16,128}$/.test(generation)) return errorResponse(400, "invalid_executor_generation");
-  const takeover = request.headers.get("x-relay-executor-takeover") === "true";
   const stub = env.RELAY_CHANNEL.getByName(authenticated.channel);
   return stub.fetch("https://relay.internal/executor", {
     headers: {
@@ -186,21 +201,22 @@ export class RelayChannel extends DurableObject<Env> {
     }
     if (!input.request || input.request.method !== "POST" || typeof input.request.body !== "string") return errorResponse(400, "invalid_relay_request");
     if (!this.executorIsLive() || !this.executorGeneration) return errorResponse(503, "executor_offline");
-    if (this.pending.size >= DEFAULT_LIMITS.maxPendingCalls) return errorResponse(429, "executor_busy");
+    if (this.pending.size >= limit(this.env.MAX_PENDING_CALLS, DEFAULT_LIMITS.maxPendingCalls)) return errorResponse(429, "executor_busy");
     const requestId = randomBase64Url(16);
+    const deadlineMs = limit(this.env.DEADLINE_MS, DEFAULT_LIMITS.deadlineMs);
     const frame: RelayRequestFrame = {
       version: RELAY_PROTOCOL_VERSION,
       type: "request",
       requestId,
       executorGeneration: this.executorGeneration,
-      deadlineUnixMs: Date.now() + DEFAULT_LIMITS.deadlineMs,
+      deadlineUnixMs: Date.now() + deadlineMs,
       request: input.request,
     };
     return new Promise<Response>((resolve) => {
       const timeout = setTimeout(() => {
         this.pending.delete(requestId);
         resolve(errorResponse(504, "executor_timeout"));
-      }, DEFAULT_LIMITS.deadlineMs) as unknown as number;
+      }, deadlineMs) as unknown as number;
       this.pending.set(requestId, { resolve, timeout });
       try {
         this.executor?.send(JSON.stringify(frame));
@@ -236,9 +252,10 @@ export class RelayChannel extends DurableObject<Env> {
     const body = frame.response.body === undefined ? new Uint8Array() : base64UrlDecode(frame.response.body);
     const headers = selectSafeResponseHeaders(frame.response.headers ?? {});
     const pending = this.pending.get(frame.requestId);
-    if (!pending || !body || body.byteLength > DEFAULT_LIMITS.maxBodyBytes || !headers) return;
+    if (!pending || !body || !headers) return;
     clearTimeout(pending.timeout);
     this.pending.delete(frame.requestId);
+    if (body.byteLength > DEFAULT_LIMITS.maxBodyBytes) return pending.resolve(errorResponse(502, "response_too_large"));
     const responseHeaders = new Headers(headers);
     // These are relay security properties, never application-controlled fields.
     responseHeaders.set("cache-control", "no-store");
