@@ -56,6 +56,8 @@ export interface RelayCredentialClaims {
   channel: string;
   role: RelayCredentialRole;
   version: typeof RELAY_PROTOCOL_VERSION;
+  /** Executor credentials only: exact browser Origin the executor upgrade must present. Absent = unbound. */
+  origin?: string;
 }
 
 export interface ChannelBootstrap {

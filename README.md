@@ -78,9 +78,29 @@ responses, not application-protocol responses.
   enabled as defence in depth.
 - Set `RELAY_HMAC_KEY` with `wrangler secret put RELAY_HMAC_KEY`. Rotating it
   invalidates every issued URL; there is deliberately no per-channel revocation.
-- Set `EXECUTOR_ORIGIN` in deployment configuration to the exact hosting
-  application origin. Executor WebSocket upgrades require an exact matching
-  `Origin`; missing and mismatched values are rejected.
+- The executor origin check is channel-bound, not deployment-bound; the relay
+  is not tied to any site URL. If `POST /v1/channels` carries an `Origin`
+  header, it is added as an `origin` claim to the HMAC-signed executor
+  credential (the caller credential is unchanged). The executor upgrade must
+  then present exactly that `Origin` (else `403 executor_origin_forbidden`,
+  including when `Origin` is missing). Bootstraps without `Origin`
+  (non-browser) produce unbound credentials. A malformed `Origin`, or the
+  opaque `"null"` (which cannot be re-verified), is rejected at bootstrap with
+  `400 invalid_origin`. Nothing is stored; origins are never logged. The claim
+  is optional, so the credential format stays at protocol version 1 and
+  pre-existing credentials remain valid.
+
+## Deployment
+
+The only required configuration is the `RELAY_HMAC_KEY` secret. Hostname and
+routes are chosen by the deployer, outside this repo. A deployment repo
+depends on this package (`github:the-greenman/browser-executor-relay#<ref>`),
+binds the `RelayChannel` Durable Object (new SQLite class migration), and has a
+three-line entry:
+
+```ts
+export { default, RelayChannel } from "browser-executor-relay";
+```
 
 ## Limits
 

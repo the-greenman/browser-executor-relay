@@ -20,7 +20,8 @@ function claimsAreValid(value: unknown): value is RelayCredentialClaims {
     typeof claims.channel === "string" &&
     /^[A-Za-z0-9_-]{43}$/.test(claims.channel) &&
     (claims.role === "executor" || claims.role === "caller") &&
-    claims.version === 1
+    claims.version === 1 &&
+    (claims.origin === undefined || (claims.role === "executor" && typeof claims.origin === "string"))
   );
 }
 

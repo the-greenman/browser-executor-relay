@@ -86,13 +86,58 @@ describe("generic relay", () => {
     await expect(response.json()).resolves.toEqual({ error: "executor_offline" });
   });
 
-  it("requires the exact configured Origin for executor upgrades", async () => {
-    const bootstrap = (await (await worker.default.fetch("https://relay.example/v1/channels", { method: "POST" })).json()) as ChannelBootstrap;
-    const response = await worker.default.fetch(bootstrap.executorUrl.replace("wss:", "https:"), {
-      headers: { upgrade: "websocket", "x-relay-executor-generation": "test-executor-generation-0000" },
+  describe("channel-bound executor origin", () => {
+    const boot = async (origin?: string) =>
+      worker.default.fetch("https://relay.example/v1/channels", { method: "POST", headers: origin === undefined ? {} : { origin } });
+    const up = (b: ChannelBootstrap, origin?: string) =>
+      worker.default.fetch(b.executorUrl.replace("wss:", "https:"), {
+        headers: { upgrade: "websocket", "x-relay-executor-generation": "test-executor-generation-0000", ...(origin === undefined ? {} : { origin }) },
+      });
+    const claims = (url: string) => JSON.parse(atob(url.split("/").pop()!.split(".")[0].replace(/-/g, "+").replace(/_/g, "/")));
+
+    it("binds the bootstrap Origin into the executor credential only", async () => {
+      const b = (await (await boot("https://site.example")).json()) as ChannelBootstrap;
+      expect(claims(b.executorUrl).origin).toBe("https://site.example");
+      expect(claims(b.callerUrl).origin).toBeUndefined();
     });
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toEqual({ error: "executor_origin_forbidden" });
+
+    it("accepts the same origin, rejects other or missing origins", async () => {
+      const b = (await (await boot("https://site.example")).json()) as ChannelBootstrap;
+      expect((await up(b, "https://other.example")).status).toBe(403);
+      const missing = await up(b);
+      expect(missing.status).toBe(403);
+      await expect(missing.json()).resolves.toEqual({ error: "executor_origin_forbidden" });
+      expect((await up(b, "https://site.example")).status).toBe(101);
+    });
+
+    it("leaves non-browser bootstraps unbound", async () => {
+      const b = (await (await boot()).json()) as ChannelBootstrap;
+      expect(claims(b.executorUrl).origin).toBeUndefined();
+      expect((await up(b)).status).toBe(101);
+      const b2 = (await (await boot()).json()) as ChannelBootstrap;
+      expect((await up(b2, "https://anything.example")).status).toBe(101);
+    });
+
+    it("fails the signature when the origin claim is tampered", async () => {
+      const b = (await (await boot("https://site.example")).json()) as ChannelBootstrap;
+      const parts = b.executorUrl.split("/");
+      const [payload, sig] = parts.pop()!.split(".");
+      const forged = btoa(JSON.stringify({ ...claims(b.executorUrl), origin: "https://evil.example" })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      expect(forged).not.toBe(payload);
+      const res = await worker.default.fetch([...parts, `${forged}.${sig}`].join("/").replace("wss:", "https:"), {
+        headers: { upgrade: "websocket", origin: "https://evil.example", "x-relay-executor-generation": "test-executor-generation-0000" },
+      });
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toEqual({ error: "invalid_credential" });
+    });
+
+    it("rejects malformed and null Origins at bootstrap", async () => {
+      for (const o of ["null", "https://site.example/path", "site.example", "https://site.example/"]) {
+        const res = await boot(o);
+        expect(res.status).toBe(400);
+        await expect(res.json()).resolves.toEqual({ error: "invalid_origin" });
+      }
+    });
   });
 
   it("isolates concurrent callers even when their opaque application IDs collide", async () => {

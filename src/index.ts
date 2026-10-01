@@ -16,8 +16,6 @@ export interface Env {
   RELAY_CHANNEL: DurableObjectNamespace<RelayChannel>;
   /** Single durable relay secret. Configure with `wrangler secret put`. */
   RELAY_HMAC_KEY: string;
-  /** Optional exact browser origin for executor WebSocket upgrades. */
-  EXECUTOR_ORIGIN?: string;
   /** Optional overrides of DEFAULT_LIMITS (positive integers); mainly for tests. */
   DEADLINE_MS?: string;
   MAX_PENDING_CALLS?: string;
@@ -54,18 +52,22 @@ async function authenticatedChannel(
   request: Request,
   env: Env,
   expectedRole: RelayCredentialRole,
-): Promise<{ channel: string; credential: string } | null> {
+): Promise<{ channel: string; credential: string; origin?: string } | null> {
   const parsed = parsePath(new URL(request.url).pathname);
   const expectedRoute = expectedRole === "caller" ? "call" : "executor";
   if (!parsed || parsed.route !== expectedRoute) return null;
   const claims = await verifyCredential(parsed.credential, env.RELAY_HMAC_KEY);
   if (!claims || claims.channel !== parsed.channel || claims.role !== expectedRole) return null;
-  return { channel: parsed.channel, credential: parsed.credential };
+  return { channel: parsed.channel, credential: parsed.credential, origin: claims.origin };
 }
 
-function executorOriginAllowed(request: Request, env: Env): boolean {
-  const origin = request.headers.get("origin");
-  return Boolean(env.EXECUTOR_ORIGIN && origin === env.EXECUTOR_ORIGIN);
+/** A serialized origin: scheme://host[:port], no path. Opaque origins ("null") cannot be re-verified. */
+function wellFormedOrigin(value: string): boolean {
+  try {
+    return value !== "null" && new URL(value).origin === value;
+  } catch {
+    return false;
+  }
 }
 
 /** Browsers cannot set WebSocket upgrade headers, so query params are accepted; headers serve non-browser executors. Never logged. */
@@ -78,8 +80,13 @@ function executorParams(request: Request): { generation: string | null; takeover
 
 async function bootstrap(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return notAllowed("POST");
+  const origin = request.headers.get("origin");
+  if (origin !== null && !wellFormedOrigin(origin)) return errorResponse(400, "invalid_origin");
   const channel = randomBase64Url(32);
-  const executorCredential = await signCredential({ channel, role: "executor", version: RELAY_PROTOCOL_VERSION }, env.RELAY_HMAC_KEY);
+  const executorCredential = await signCredential(
+    { channel, role: "executor", version: RELAY_PROTOCOL_VERSION, ...(origin !== null && { origin }) },
+    env.RELAY_HMAC_KEY,
+  );
   const callerCredential = await signCredential({ channel, role: "caller", version: RELAY_PROTOCOL_VERSION }, env.RELAY_HMAC_KEY);
   const base = new URL(request.url);
   const result: ChannelBootstrap = {
@@ -93,9 +100,11 @@ async function bootstrap(request: Request, env: Env): Promise<Response> {
 async function routeExecutor(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return notAllowed("GET");
   if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return errorResponse(426, "websocket_upgrade_required");
-  if (!executorOriginAllowed(request, env)) return errorResponse(403, "executor_origin_forbidden");
   const authenticated = await authenticatedChannel(request, env, "executor");
   if (!authenticated) return errorResponse(403, "invalid_credential");
+  if (authenticated.origin !== undefined && request.headers.get("origin") !== authenticated.origin) {
+    return errorResponse(403, "executor_origin_forbidden");
+  }
   const { generation, takeover } = executorParams(request);
   if (!generation || !/^[A-Za-z0-9_-]{16,128}$/.test(generation)) return errorResponse(400, "invalid_executor_generation");
   const stub = env.RELAY_CHANNEL.getByName(authenticated.channel);
