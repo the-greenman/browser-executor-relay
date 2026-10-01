@@ -16,12 +16,11 @@ GET  /v1/channels/{channel}/executor/{executorCredential}  Upgrade: websocket
 POST /v1/channels/{channel}/call/{callerCredential}
 ```
 
-The browser executor supplies `X-Relay-Executor-Generation` (a fresh random
-base64url nonce, 16–128 characters) when connecting. The Durable Object saves
+The executor supplies a fresh random base64url generation nonce (16–128 characters) when connecting: `?generation=<n>` (browsers cannot set upgrade headers) or the `X-Relay-Executor-Generation` header for non-browser executors; the query value wins. These are not credentials and are never logged. The Durable Object saves
 only `{ kind, generation, connectedAtUnixMs }` as a WebSocket hibernation
 attachment, so it can reconstruct the live executor after hibernation without
 Durable Object storage. A replacement executor must send
-`X-Relay-Executor-Takeover: true`.
+`?takeover=true` or `X-Relay-Executor-Takeover: true`.
 
 The caller body is forwarded as an opaque base64url body in this WebSocket
 frame. `body` is bytes, not parsed JSON or text.
@@ -63,7 +62,7 @@ headers. The executor cannot set cookies or turn this into a transparent proxy.
 
 Unsupported caller methods return `405`; malformed credentials return `403`;
 no executor returns `503 {"error":"executor_offline"}`; overload returns
-`429`; and executor deadline expiry returns `504`. These are relay transport
+`429`; an executor response over 128 KiB returns `502 response_too_large`; and executor deadline expiry returns `504`. These are relay transport
 responses, not application-protocol responses.
 
 ## State and security

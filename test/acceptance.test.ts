@@ -110,6 +110,35 @@ describe("acceptance", () => {
     second.close();
   });
 
+  it("accepts generation and takeover as query params (browser executors) and rejects bad ones", async () => {
+    const b = await bootstrap();
+    const url = b.executorUrl.replace("wss:", "https:");
+    const up = (qs: string) => worker.fetch(`${url}${qs}`, { headers: { upgrade: "websocket", origin: "https://app.example" } });
+    expect((await up("")).status).toBe(400);
+    expect((await up("?generation=short")).status).toBe(400);
+    const first = (await up("?generation=query-generation-0001")).webSocket!;
+    echo(first);
+    expect((await up("?generation=query-generation-0002")).status).toBe(409);
+    const second = (await up("?generation=query-generation-0002&takeover=true")).webSocket!;
+    echo(second);
+    expect(await (await call(b, "q")).text()).toBe("q");
+    second.close();
+  });
+
+  it("fails fast with 502 response_too_large when the executor response exceeds the limit", async () => {
+    const b = await bootstrap();
+    const ex = (await connect(b)).webSocket!;
+    ex.accept();
+    ex.addEventListener("message", (e) => {
+      const f = JSON.parse(e.data as string) as RelayRequestFrame;
+      ex.send(JSON.stringify({ version: 1, type: "response", requestId: f.requestId, executorGeneration: f.executorGeneration, response: { status: 200, headers: {}, body: base64UrlEncode(new Uint8Array(128 * 1024 + 1)) } }));
+    });
+    const res = await call(b, "big");
+    expect(res.status).toBe(502);
+    await expect(res.json()).resolves.toEqual({ error: "response_too_large" });
+    ex.close();
+  });
+
   it("enforces body size, pending-call and deadline limits", async () => {
     const b = await bootstrap();
     expect((await call(b, "x".repeat(128 * 1024 + 1))).status).toBe(413);

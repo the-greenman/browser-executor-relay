@@ -68,6 +68,14 @@ function executorOriginAllowed(request: Request, env: Env): boolean {
   return Boolean(env.EXECUTOR_ORIGIN && origin === env.EXECUTOR_ORIGIN);
 }
 
+/** Browsers cannot set WebSocket upgrade headers, so query params are accepted; headers serve non-browser executors. Never logged. */
+function executorParams(request: Request): { generation: string | null; takeover: boolean } {
+  const url = new URL(request.url);
+  const generation = url.searchParams.get("generation") ?? request.headers.get("x-relay-executor-generation");
+  const takeover = (url.searchParams.get("takeover") ?? request.headers.get("x-relay-executor-takeover")) === "true";
+  return { generation, takeover };
+}
+
 async function bootstrap(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return notAllowed("POST");
   const channel = randomBase64Url(32);
@@ -88,9 +96,8 @@ async function routeExecutor(request: Request, env: Env): Promise<Response> {
   if (!executorOriginAllowed(request, env)) return errorResponse(403, "executor_origin_forbidden");
   const authenticated = await authenticatedChannel(request, env, "executor");
   if (!authenticated) return errorResponse(403, "invalid_credential");
-  const generation = request.headers.get("x-relay-executor-generation");
+  const { generation, takeover } = executorParams(request);
   if (!generation || !/^[A-Za-z0-9_-]{16,128}$/.test(generation)) return errorResponse(400, "invalid_executor_generation");
-  const takeover = request.headers.get("x-relay-executor-takeover") === "true";
   const stub = env.RELAY_CHANNEL.getByName(authenticated.channel);
   return stub.fetch("https://relay.internal/executor", {
     headers: {
@@ -245,9 +252,10 @@ export class RelayChannel extends DurableObject<Env> {
     const body = frame.response.body === undefined ? new Uint8Array() : base64UrlDecode(frame.response.body);
     const headers = selectSafeResponseHeaders(frame.response.headers ?? {});
     const pending = this.pending.get(frame.requestId);
-    if (!pending || !body || body.byteLength > DEFAULT_LIMITS.maxBodyBytes || !headers) return;
+    if (!pending || !body || !headers) return;
     clearTimeout(pending.timeout);
     this.pending.delete(frame.requestId);
+    if (body.byteLength > DEFAULT_LIMITS.maxBodyBytes) return pending.resolve(errorResponse(502, "response_too_large"));
     const responseHeaders = new Headers(headers);
     // These are relay security properties, never application-controlled fields.
     responseHeaders.set("cache-control", "no-store");
