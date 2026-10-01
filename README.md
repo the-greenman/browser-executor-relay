@@ -83,6 +83,11 @@ responses, not application-protocol responses.
   application origin. Executor WebSocket upgrades require an exact matching
   `Origin`; missing and mismatched values are rejected.
 
+## Limits
+
+Defaults: 128 KiB bodies, 32 pending calls, 30 s deadline. `DEADLINE_MS` and
+`MAX_PENDING_CALLS` may override the latter two (positive integers; used by tests).
+
 ## Local development
 
 ```bash

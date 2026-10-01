@@ -18,6 +18,14 @@ export interface Env {
   RELAY_HMAC_KEY: string;
   /** Optional exact browser origin for executor WebSocket upgrades. */
   EXECUTOR_ORIGIN?: string;
+  /** Optional overrides of DEFAULT_LIMITS (positive integers); mainly for tests. */
+  DEADLINE_MS?: string;
+  MAX_PENDING_CALLS?: string;
+}
+
+function limit(value: string | undefined, fallback: number): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
 const JSON_HEADERS = {
@@ -186,21 +194,22 @@ export class RelayChannel extends DurableObject<Env> {
     }
     if (!input.request || input.request.method !== "POST" || typeof input.request.body !== "string") return errorResponse(400, "invalid_relay_request");
     if (!this.executorIsLive() || !this.executorGeneration) return errorResponse(503, "executor_offline");
-    if (this.pending.size >= DEFAULT_LIMITS.maxPendingCalls) return errorResponse(429, "executor_busy");
+    if (this.pending.size >= limit(this.env.MAX_PENDING_CALLS, DEFAULT_LIMITS.maxPendingCalls)) return errorResponse(429, "executor_busy");
     const requestId = randomBase64Url(16);
+    const deadlineMs = limit(this.env.DEADLINE_MS, DEFAULT_LIMITS.deadlineMs);
     const frame: RelayRequestFrame = {
       version: RELAY_PROTOCOL_VERSION,
       type: "request",
       requestId,
       executorGeneration: this.executorGeneration,
-      deadlineUnixMs: Date.now() + DEFAULT_LIMITS.deadlineMs,
+      deadlineUnixMs: Date.now() + deadlineMs,
       request: input.request,
     };
     return new Promise<Response>((resolve) => {
       const timeout = setTimeout(() => {
         this.pending.delete(requestId);
         resolve(errorResponse(504, "executor_timeout"));
-      }, DEFAULT_LIMITS.deadlineMs) as unknown as number;
+      }, deadlineMs) as unknown as number;
       this.pending.set(requestId, { resolve, timeout });
       try {
         this.executor?.send(JSON.stringify(frame));
