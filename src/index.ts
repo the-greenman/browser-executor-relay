@@ -45,7 +45,7 @@ function errorResponse(status: number, error: string): Response {
 }
 
 function notAllowed(allowedMethod: "GET" | "POST"): Response {
-  return new Response(null, { status: 405, headers: { allow: allowedMethod } });
+  return new Response(null, { status: 405, headers: { ...SECURITY_HEADERS, allow: allowedMethod } });
 }
 
 function parsePath(pathname: string): { channel: string; route: "executor" | "call"; credential: string } | null {
@@ -119,8 +119,8 @@ async function routeExecutor(request: Request, env: Env): Promise<Response> {
   return stub.fetch("https://relay.internal/executor", {
     headers: {
       upgrade: "websocket",
-      "x-relay-executor-generation": generation,
-      "x-relay-executor-takeover": takeover ? "true" : "false",
+      [EXECUTOR_GENERATION_HEADER]: generation,
+      [EXECUTOR_TAKEOVER_HEADER]: takeover ? "true" : "false",
     },
   });
 }
@@ -187,8 +187,8 @@ export class RelayChannel extends DurableObject<Env> {
   }
 
   private acceptExecutor(request: Request): Response {
-    const generation = request.headers.get("x-relay-executor-generation");
-    const takeover = request.headers.get("x-relay-executor-takeover") === "true";
+    const generation = request.headers.get(EXECUTOR_GENERATION_HEADER);
+    const takeover = request.headers.get(EXECUTOR_TAKEOVER_HEADER) === "true";
     if (!generation) return errorResponse(400, "invalid_executor_generation");
     if (this.executorIsLive()) {
       if (!takeover) return errorResponse(409, "executor_already_connected");

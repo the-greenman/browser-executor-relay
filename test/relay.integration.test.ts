@@ -223,6 +223,7 @@ describe("CORS for browser callers", () => {
   it("adds ACAO to bootstrap, caller errors, and 404s; leaves executor alone", async () => {
     const boot = await worker.default.fetch("https://relay.example/v1/channels", { method: "POST" });
     expect(boot.headers.get("access-control-allow-origin")).toBe("*");
+    expect(boot.headers.get("cache-control")).toBe("no-store");
     const b = (await boot.json()) as ChannelBootstrap;
     const offline = await worker.default.fetch(b.callerUrl, { method: "POST", body: "x" });
     expect(offline.status).toBe(503);
@@ -235,5 +236,8 @@ describe("CORS for browser callers", () => {
     const ex = await worker.default.fetch(b.executorUrl.replace("wss:", "https:"));
     expect(ex.status).toBe(426);
     expect(ex.headers.get("access-control-allow-origin")).toBeNull();
+    const exPost = await worker.default.fetch(b.executorUrl.replace("wss:", "https:"), { method: "POST" });
+    expect(exPost.status).toBe(405);
+    expect(exPost.headers.get("cache-control")).toBe("no-store");
   });
 });

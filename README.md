@@ -59,6 +59,8 @@ limited to `cache-control`, `content-encoding`, `content-language`,
 `content-type`, `etag`, `last-modified`, and `www-authenticate`. It excludes
 credentials, cookies, forwarding headers, `origin`, `referer`, and hop-by-hop
 headers. The executor cannot set cookies or turn this into a transparent proxy.
+The relay then sets `cache-control: no-store` and `referrer-policy: no-referrer`
+on every bootstrap and caller response, overriding any executor `cache-control`.
 
 Unsupported caller methods return `405`; malformed credentials return `403`;
 no executor returns `503 {"error":"executor_offline"}`; overload returns

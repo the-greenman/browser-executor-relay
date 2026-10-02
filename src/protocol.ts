@@ -2,8 +2,7 @@
  * Generic relay protocol: the dependency-free, Worker-free entry for executor
  * implementers (package export `./protocol`). Keep this file import-free and
  * free of Worker/Durable Object globals so a browser app can bundle or vendor it.
- *
- * Generic relay protocol. `body` is base64url encoded bytes and is opaque to
+ * `body` is base64url encoded bytes and is opaque to
  * this package: it may contain any application protocol.
  */
 export const RELAY_PROTOCOL_VERSION = 1;
