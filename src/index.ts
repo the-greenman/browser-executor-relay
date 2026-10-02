@@ -297,12 +297,43 @@ export class RelayChannel extends DurableObject<Env> {
   }
 }
 
+// Credentials live in the URL path and no cookies are used, so CORS is open (`*`, never Allow-Credentials).
+const CORS_EXPOSE = "etag, last-modified, www-authenticate, content-encoding";
+
+function withCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-expose-headers", CORS_EXPOSE);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+/** Path shape only: no credential check, no channel lookup, so a preflight reveals nothing. */
+function preflight(request: Request): Response {
+  // Reflect requested headers (safe: no credentials are ever honoured; the relay forwards only an allow-list anyway),
+  // so browser MCP clients with extra headers are not broken by a stale fixed list.
+  const requested = request.headers.get("access-control-request-headers");
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "POST, OPTIONS",
+      "access-control-allow-headers": requested ?? "content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id",
+      "access-control-max-age": "600",
+      vary: "access-control-request-headers",
+    },
+  });
+}
+
+async function route(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname === "/v1/channels") return request.method === "OPTIONS" ? preflight(request) : withCors(await bootstrap(request, env));
+  const parsed = parsePath(url.pathname);
+  if (!parsed) return withCors(errorResponse(404, "not_found"));
+  // Executor route is a WebSocket upgrade: no CORS (origin is bound per channel).
+  if (parsed.route === "executor") return routeExecutor(request, env);
+  return request.method === "OPTIONS" ? preflight(request) : withCors(await routeCall(request, env));
+}
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    if (url.pathname === "/v1/channels") return bootstrap(request, env);
-    const parsed = parsePath(url.pathname);
-    if (!parsed) return errorResponse(404, "not_found");
-    return parsed.route === "executor" ? routeExecutor(request, env) : routeCall(request, env);
-  },
+  fetch: route,
 };
