@@ -1,6 +1,6 @@
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { base64UrlDecode, base64UrlEncode } from "../src/codec";
+import { base64UrlDecode, base64UrlEncode } from "../src/protocol";
 import type { ChannelBootstrap, RelayRequestFrame } from "../src/protocol";
 
 const worker = exports as unknown as {

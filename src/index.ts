@@ -1,8 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
-import { base64UrlDecode, base64UrlEncode, randomBase64Url } from "./codec";
 import { signCredential, verifyCredential } from "./credentials";
 import {
+  CLOSE_EXECUTOR_REPLACED,
   DEFAULT_LIMITS,
+  EXECUTOR_GENERATION_HEADER,
+  EXECUTOR_GENERATION_PARAM,
+  EXECUTOR_GENERATION_PATTERN,
+  EXECUTOR_TAKEOVER_HEADER,
+  EXECUTOR_TAKEOVER_PARAM,
+  base64UrlDecode,
+  base64UrlEncode,
+  randomBase64Url,
   RELAY_PROTOCOL_VERSION,
   type ChannelBootstrap,
   type ExecutorAttachment,
@@ -26,14 +34,14 @@ function limit(value: string | undefined, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-const JSON_HEADERS = {
-  "content-type": "application/json; charset=utf-8",
+/** Relay security properties: never application-controlled. Applied to every error and, via withCors, every routed response. */
+const SECURITY_HEADERS = {
   "cache-control": "no-store",
   "referrer-policy": "no-referrer",
 };
 
 function errorResponse(status: number, error: string): Response {
-  return Response.json({ error }, { status, headers: JSON_HEADERS });
+  return Response.json({ error }, { status, headers: SECURITY_HEADERS });
 }
 
 function notAllowed(allowedMethod: "GET" | "POST"): Response {
@@ -73,8 +81,8 @@ function wellFormedOrigin(value: string): boolean {
 /** Browsers cannot set WebSocket upgrade headers, so query params are accepted; headers serve non-browser executors. Never logged. */
 function executorParams(request: Request): { generation: string | null; takeover: boolean } {
   const url = new URL(request.url);
-  const generation = url.searchParams.get("generation") ?? request.headers.get("x-relay-executor-generation");
-  const takeover = (url.searchParams.get("takeover") ?? request.headers.get("x-relay-executor-takeover")) === "true";
+  const generation = url.searchParams.get(EXECUTOR_GENERATION_PARAM) ?? request.headers.get(EXECUTOR_GENERATION_HEADER);
+  const takeover = (url.searchParams.get(EXECUTOR_TAKEOVER_PARAM) ?? request.headers.get(EXECUTOR_TAKEOVER_HEADER)) === "true";
   return { generation, takeover };
 }
 
@@ -94,7 +102,7 @@ async function bootstrap(request: Request, env: Env): Promise<Response> {
     executorUrl: `${base.protocol === "https:" ? "wss:" : "ws:"}//${base.host}/v1/channels/${channel}/executor/${executorCredential}`,
     callerUrl: `${base.origin}/v1/channels/${channel}/call/${callerCredential}`,
   };
-  return Response.json(result, { headers: JSON_HEADERS });
+  return Response.json(result);
 }
 
 async function routeExecutor(request: Request, env: Env): Promise<Response> {
@@ -106,7 +114,7 @@ async function routeExecutor(request: Request, env: Env): Promise<Response> {
     return errorResponse(403, "executor_origin_forbidden");
   }
   const { generation, takeover } = executorParams(request);
-  if (!generation || !/^[A-Za-z0-9_-]{16,128}$/.test(generation)) return errorResponse(400, "invalid_executor_generation");
+  if (!generation || !EXECUTOR_GENERATION_PATTERN.test(generation)) return errorResponse(400, "invalid_executor_generation");
   const stub = env.RELAY_CHANNEL.getByName(authenticated.channel);
   return stub.fetch("https://relay.internal/executor", {
     headers: {
@@ -184,7 +192,7 @@ export class RelayChannel extends DurableObject<Env> {
     if (!generation) return errorResponse(400, "invalid_executor_generation");
     if (this.executorIsLive()) {
       if (!takeover) return errorResponse(409, "executor_already_connected");
-      this.executor?.close(4002, "executor_replaced");
+      this.executor?.close(CLOSE_EXECUTOR_REPLACED, "executor_replaced");
       this.rejectPending("executor_replaced");
     }
     const pair = new WebSocketPair();
@@ -266,26 +274,22 @@ export class RelayChannel extends DurableObject<Env> {
     this.pending.delete(frame.requestId);
     if (body.byteLength > DEFAULT_LIMITS.maxBodyBytes) return pending.resolve(errorResponse(502, "response_too_large"));
     const responseHeaders = new Headers(headers);
-    // These are relay security properties, never application-controlled fields.
-    responseHeaders.set("cache-control", "no-store");
-    responseHeaders.set("referrer-policy", "no-referrer");
     pending.resolve(new Response(body as unknown as BodyInit, { status: frame.response.status, headers: responseHeaders }));
   }
 
+  private dropExecutor(socket: WebSocket): void {
+    if (socket !== this.executor) return;
+    this.executor = null;
+    this.executorGeneration = null;
+    this.rejectPending("executor_offline");
+  }
+
   webSocketClose(socket: WebSocket): void {
-    if (socket === this.executor) {
-      this.executor = null;
-      this.executorGeneration = null;
-      this.rejectPending("executor_offline");
-    }
+    this.dropExecutor(socket);
   }
 
   webSocketError(socket: WebSocket): void {
-    if (socket === this.executor) {
-      this.executor = null;
-      this.executorGeneration = null;
-      this.rejectPending("executor_offline");
-    }
+    this.dropExecutor(socket);
   }
 
   private rejectPending(error: string): void {
@@ -302,6 +306,7 @@ const CORS_EXPOSE = "etag, last-modified, www-authenticate, content-encoding";
 
 function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) headers.set(name, value);
   headers.set("access-control-allow-origin", "*");
   headers.set("access-control-expose-headers", CORS_EXPOSE);
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
