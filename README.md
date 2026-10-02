@@ -59,6 +59,8 @@ limited to `cache-control`, `content-encoding`, `content-language`,
 `content-type`, `etag`, `last-modified`, and `www-authenticate`. It excludes
 credentials, cookies, forwarding headers, `origin`, `referer`, and hop-by-hop
 headers. The executor cannot set cookies or turn this into a transparent proxy.
+The relay then sets `cache-control: no-store` and `referrer-policy: no-referrer`
+on every bootstrap and caller response, overriding any executor `cache-control`.
 
 Unsupported caller methods return `405`; malformed credentials return `403`;
 no executor returns `503 {"error":"executor_offline"}`; overload returns
@@ -68,6 +70,16 @@ responses, not application-protocol responses.
 ## Browser callers / CORS
 
 Capability credentials live in the URL path and the relay never uses cookies, so CORS is permissive without credentials: every bootstrap and caller response, including errors, carries `Access-Control-Allow-Origin: *` (never `Allow-Credentials`) and `Access-Control-Expose-Headers` for the relayed response headers. `OPTIONS /v1/channels` and `OPTIONS /v1/channels/{channel}/call/{credential}` return `204` with `Allow-Methods: POST, OPTIONS`, `Allow-Headers` reflecting the browser's `Access-Control-Request-Headers` (default `content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id`) and `Max-Age: 600`. Preflight checks path shape only: no credential validation, no channel lookup. The executor WebSocket route has no CORS; its origin is bound per channel.
+
+## Protocol entry for executor implementers
+
+`src/protocol.ts` is the single, import-free source of the wire protocol, exported as `browser-executor-relay/protocol` (`package.json` `exports["./protocol"]`). It has no Worker, Durable Object or `env` dependency, so a browser app can bundle it, or vendor that one file verbatim. It exports:
+
+- `RELAY_PROTOCOL_VERSION`, `DEFAULT_LIMITS`, and the types `RelayRequestFrame`, `RelayResponseFrame`, `RelayHttpRequest`, `RelayHttpResponse`, `SafeHeaders`, `ChannelBootstrap`.
+- `CLOSE_EXECUTOR_REPLACED` (`4002`): the close code an executor receives when a takeover replaces it.
+- `EXECUTOR_GENERATION_PARAM` / `EXECUTOR_TAKEOVER_PARAM` (`generation`, `takeover`), the header equivalents `EXECUTOR_GENERATION_HEADER` / `EXECUTOR_TAKEOVER_HEADER`, and `EXECUTOR_GENERATION_PATTERN`.
+- `executorSocketUrl(executorUrl, generation, takeover?)` and `newExecutorGeneration()` to connect an executor.
+- Codec: `base64UrlEncode`, `base64UrlDecode` (returns `null` on invalid input, never throws), `randomBase64Url`, `utf8Bytes`.
 
 ## State and security
 

@@ -1,4 +1,4 @@
-import { base64UrlDecode, base64UrlEncode, utf8Bytes } from "./codec";
+import { base64UrlDecode, base64UrlEncode, utf8Bytes } from "./protocol";
 import type { RelayCredentialClaims } from "./protocol";
 
 const encoder = new TextEncoder();

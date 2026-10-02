@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { randomBase64Url } from "../src/codec";
+import { randomBase64Url } from "../src/protocol";
 import { signCredential, verifyCredential } from "../src/credentials";
 
 describe("self-contained credentials", () => {

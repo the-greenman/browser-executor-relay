@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { base64UrlDecode, base64UrlEncode } from "../src/codec";
+import { base64UrlDecode, base64UrlEncode } from "../src/protocol";
 import { selectSafeRequestHeaders, selectSafeResponseHeaders } from "../src/safe-headers";
 
 describe("generic opaque protocol helpers", () => {
