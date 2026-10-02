@@ -203,3 +203,37 @@ describe("generic relay", () => {
     executor.close();
   });
 });
+
+describe("CORS for browser callers", () => {
+  const CH = "A".repeat(43);
+  it("answers preflight on both routes without credentials", async () => {
+    for (const url of ["https://relay.example/v1/channels", `https://relay.example/v1/channels/${CH}/call/not-a-valid-credential`]) {
+      const r = await worker.default.fetch(url, { method: "OPTIONS", headers: { "access-control-request-headers": "content-type, x-custom" } });
+      expect(r.status).toBe(204);
+      expect(r.headers.get("access-control-allow-origin")).toBe("*");
+      expect(r.headers.get("access-control-allow-credentials")).toBeNull();
+      expect(r.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
+      expect(r.headers.get("access-control-allow-headers")).toBe("content-type, x-custom");
+      expect(r.headers.get("access-control-max-age")).toBe("600");
+    }
+    const d = await worker.default.fetch("https://relay.example/v1/channels", { method: "OPTIONS" });
+    expect(d.headers.get("access-control-allow-headers")).toContain("mcp-session-id");
+  });
+
+  it("adds ACAO to bootstrap, caller errors, and 404s; leaves executor alone", async () => {
+    const boot = await worker.default.fetch("https://relay.example/v1/channels", { method: "POST" });
+    expect(boot.headers.get("access-control-allow-origin")).toBe("*");
+    const b = (await boot.json()) as ChannelBootstrap;
+    const offline = await worker.default.fetch(b.callerUrl, { method: "POST", body: "x" });
+    expect(offline.status).toBe(503);
+    expect(offline.headers.get("access-control-allow-origin")).toBe("*");
+    const bad = await worker.default.fetch(`https://relay.example/v1/channels/${CH}/call/bogus`, { method: "POST" });
+    expect(bad.status).toBe(403);
+    expect(bad.headers.get("access-control-allow-origin")).toBe("*");
+    const nf = await worker.default.fetch("https://relay.example/nope");
+    expect(nf.headers.get("access-control-allow-origin")).toBe("*");
+    const ex = await worker.default.fetch(b.executorUrl.replace("wss:", "https:"));
+    expect(ex.status).toBe(426);
+    expect(ex.headers.get("access-control-allow-origin")).toBeNull();
+  });
+});

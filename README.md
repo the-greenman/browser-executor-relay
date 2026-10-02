@@ -65,6 +65,10 @@ no executor returns `503 {"error":"executor_offline"}`; overload returns
 `429`; an executor response over 128 KiB returns `502 response_too_large`; and executor deadline expiry returns `504`. These are relay transport
 responses, not application-protocol responses.
 
+## Browser callers / CORS
+
+Capability credentials live in the URL path and the relay never uses cookies, so CORS is permissive without credentials: every bootstrap and caller response, including errors, carries `Access-Control-Allow-Origin: *` (never `Allow-Credentials`) and `Access-Control-Expose-Headers` for the relayed response headers. `OPTIONS /v1/channels` and `OPTIONS /v1/channels/{channel}/call/{credential}` return `204` with `Allow-Methods: POST, OPTIONS`, `Allow-Headers` reflecting the browser's `Access-Control-Request-Headers` (default `content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id`) and `Max-Age: 600`. Preflight checks path shape only: no credential validation, no channel lookup. The executor WebSocket route has no CORS; its origin is bound per channel.
+
 ## State and security
 
 - No D1, KV, R2, `ctx.storage`, channel/token registry, user record,
