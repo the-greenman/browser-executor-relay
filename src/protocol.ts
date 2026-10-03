@@ -19,7 +19,8 @@ export const EXECUTOR_TAKEOVER_HEADER = "x-relay-executor-takeover";
 export const EXECUTOR_GENERATION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
 export const DEFAULT_LIMITS = {
-  maxBodyBytes: 128 * 1024,
+  // 700 KB: base64url encoding adds ~1/3, keeping the response frame under Cloudflare's 1 MiB WebSocket message limit.
+  maxBodyBytes: 700 * 1024,
   maxPendingCalls: 32,
   deadlineMs: 30_000,
 } as const;

@@ -131,7 +131,7 @@ describe("acceptance", () => {
     ex.accept();
     ex.addEventListener("message", (e) => {
       const f = JSON.parse(e.data as string) as RelayRequestFrame;
-      ex.send(JSON.stringify({ version: 1, type: "response", requestId: f.requestId, executorGeneration: f.executorGeneration, response: { status: 200, headers: {}, body: base64UrlEncode(new Uint8Array(128 * 1024 + 1)) } }));
+      ex.send(JSON.stringify({ version: 1, type: "response", requestId: f.requestId, executorGeneration: f.executorGeneration, response: { status: 200, headers: {}, body: base64UrlEncode(new Uint8Array(700 * 1024 + 1)) } }));
     });
     const res = await call(b, "big");
     expect(res.status).toBe(502);
@@ -141,7 +141,7 @@ describe("acceptance", () => {
 
   it("enforces body size, pending-call and deadline limits", async () => {
     const b = await bootstrap();
-    expect((await call(b, "x".repeat(128 * 1024 + 1))).status).toBe(413);
+    expect((await call(b, "x".repeat(700 * 1024 + 1))).status).toBe(413);
     const ex = (await connect(b)).webSocket!;
     ex.accept(); // never responds
     const slow = Array.from({ length: 12 }, (_, i) => call(b, `p${i}`));
