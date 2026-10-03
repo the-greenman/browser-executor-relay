@@ -64,7 +64,7 @@ on every bootstrap and caller response, overriding any executor `cache-control`.
 
 Unsupported caller methods return `405`; malformed credentials return `403`;
 no executor returns `503 {"error":"executor_offline"}`; overload returns
-`429`; an executor response over 128 KiB returns `502 response_too_large`; and executor deadline expiry returns `504`. These are relay transport
+`429`; an executor response over 700 KiB returns `502 response_too_large`; and executor deadline expiry returns `504`. These are relay transport
 responses, not application-protocol responses.
 
 ## Browser callers / CORS
@@ -120,7 +120,7 @@ export { default, RelayChannel } from "browser-executor-relay";
 
 ## Limits
 
-Defaults: 128 KiB bodies, 32 pending calls, 30 s deadline. `DEADLINE_MS` and
+Defaults: 700 KiB bodies, 32 pending calls, 30 s deadline. `DEADLINE_MS` and
 `MAX_PENDING_CALLS` may override the latter two (positive integers; used by tests).
 
 ## Local development
