@@ -302,7 +302,8 @@ export class RelayChannel extends DurableObject<Env> {
 }
 
 // Credentials live in the URL path and no cookies are used, so CORS is open (`*`, never Allow-Credentials).
-const CORS_EXPOSE = "etag, last-modified, www-authenticate, content-encoding";
+// No www-authenticate: the relay never challenges, and connector checks misread its mere presence as a sign-in request.
+const CORS_EXPOSE = "etag, last-modified, content-encoding";
 
 function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
