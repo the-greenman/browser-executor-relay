@@ -319,15 +319,15 @@ Same as Phase 1 (tick boxes, `npm run check`, commit referencing `(#12)` when in
 
 #### Tasks
 
-- [ ] `src/index.ts` changes 1 to 8 in section 5, including `forwardCall` factoring with no duplicated forwarding code.
-- [ ] Integration tests in `test/relay.integration.test.ts` per section 6.
-- [ ] README "Auth" section and corrections.
+- [x] `src/index.ts` changes 1 to 8 in section 5, including `forwardCall` factoring with no duplicated forwarding code.
+- [x] Integration tests in `test/relay.integration.test.ts` per section 6.
+- [x] README "Auth" section and corrections.
 
 #### Acceptance Criteria
 
-- [ ] Full flow test green; every negative test green; legacy capability route test green.
-- [ ] `grep -c "arrayBuffer" src/index.ts` shows the body-read exists once (single shared handler).
-- [ ] README documents every route and all ceilings listed in section 7.
+- [x] Full flow test green; every negative test green; legacy capability route test green.
+- [x] `grep -c "arrayBuffer" src/index.ts` shows the body-read exists once (single shared handler).
+- [x] README documents every route and all ceilings listed in section 7.
 - [ ] Contract reviewer confirms `protocol.ts` additions are what srs-web#447 needs (pairing route constant, response type) and that the file remains import-free.
 
 #### Testing
@@ -346,17 +346,18 @@ Same as Phase 1. Push the branch only; the owner reviews the diff before any PR.
 
 - Shared HTTP helpers (`withCors`, `preflight`, `SECURITY_HEADERS`, `jsonResponse`, `errorResponse`, `methodNotAllowed`) live in a new portable `src/http.ts` (Fetch API only, no Cloudflare imports), imported by both `index.ts` and `oauth.ts`, instead of being exported from `oauth.ts` (lead decision). The portability guard covers `src/http.ts` too and allows `./http` as an import.
 - Phase 2: also added `src/http.ts` (see above) and exported `signingKey` from `credentials.ts` for the pairing HMAC; `oauth.ts` additionally exports `normalisePairingCode` and `constantTimeEqual` for tests. `preflight(request, methods?)` takes an optional allow-methods string so JSON OAuth endpoints answer `GET|POST, OPTIONS`; its allow-headers default is the existing list plus `authorization` (reflected when requested), not the narrower `content-type, authorization`.
+- Phase 3: the contract-reviewer criterion is left unticked (outside this worker's scope). Integration tests build a fresh channel and echo executor per test (`setup()`).
 - Phase 2: the security-reviewer sign-off criterion is left unticked (reviewer agents are outside this worker's scope).
 - Phase 1: the node-project smoke test is `test/smoke.node.test.ts`; Phase 2 adds the real `oauth.node.test.ts`.
 
 ## Final Acceptance
 
-- [ ] `npm run check` (typecheck + vitest, both projects) passes
-- [ ] `src/oauth.ts` and `src/credentials.ts` contain no `cloudflare:` import (guard test)
-- [ ] `src/protocol.ts` still has no imports (existing guard)
-- [ ] Capability tokens minted by the pre-change code verify unchanged
-- [ ] Full pair, 401, metadata, register, authorize, token, bearer-call, refresh flow passes in the integration suite
-- [ ] No new dependencies; `package.json` dependencies untouched; no wrangler changes
+- [x] `npm run check` (typecheck + vitest, both projects) passes
+- [x] `src/oauth.ts` and `src/credentials.ts` contain no `cloudflare:` import (guard test)
+- [x] `src/protocol.ts` still has no imports (existing guard)
+- [x] Capability tokens minted by the pre-change code verify unchanged
+- [x] Full pair, 401, metadata, register, authorize, token, bearer-call, refresh flow passes in the integration suite
+- [x] No new dependencies; `package.json` dependencies untouched; no wrangler changes
 
 ## Coordination Rules
 

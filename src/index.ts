@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { signCredential, verifyCredential } from "./credentials";
+import { errorResponse, methodNotAllowed, preflight, withCors } from "./http";
+import { handleAuth, issuePairing, verifyBearer } from "./oauth";
 import {
   CLOSE_EXECUTOR_REPLACED,
   DEFAULT_LIMITS,
@@ -8,6 +10,7 @@ import {
   EXECUTOR_GENERATION_PATTERN,
   EXECUTOR_TAKEOVER_HEADER,
   EXECUTOR_TAKEOVER_PARAM,
+  PAIRING_ROUTE,
   base64UrlDecode,
   base64UrlEncode,
   randomBase64Url,
@@ -34,35 +37,30 @@ function limit(value: string | undefined, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-/** Relay security properties: never application-controlled. Applied to every error and, via withCors, every routed response. */
-const SECURITY_HEADERS = {
-  "cache-control": "no-store",
-  "referrer-policy": "no-referrer",
-};
+type Route = "executor" | "call" | typeof PAIRING_ROUTE;
 
-function errorResponse(status: number, error: string): Response {
-  return Response.json({ error }, { status, headers: SECURITY_HEADERS });
-}
-
-function notAllowed(allowedMethod: "GET" | "POST"): Response {
-  return new Response(null, { status: 405, headers: { ...SECURITY_HEADERS, allow: allowedMethod } });
-}
-
-function parsePath(pathname: string): { channel: string; route: "executor" | "call"; credential: string } | null {
+function parsePath(pathname: string): { channel: string; route: Route; credential: string } | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length !== 5 || parts[0] !== "v1" || parts[1] !== "channels") return null;
   const [channel, route, credential] = parts.slice(2);
-  if (!/^[A-Za-z0-9_-]{43}$/.test(channel) || (route !== "executor" && route !== "call") || !credential) return null;
+  if (!/^[A-Za-z0-9_-]{43}$/.test(channel) || (route !== "executor" && route !== "call" && route !== PAIRING_ROUTE) || !credential) return null;
   return { channel, route, credential };
+}
+
+/** The credential-less bearer route: /v1/channels/{ch}/call. */
+function parseBearerPath(pathname: string): { channel: string } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length !== 4 || parts[0] !== "v1" || parts[1] !== "channels" || parts[3] !== "call") return null;
+  return /^[A-Za-z0-9_-]{43}$/.test(parts[2]) ? { channel: parts[2] } : null;
 }
 
 async function authenticatedChannel(
   request: Request,
   env: Env,
   expectedRole: RelayCredentialRole,
+  expectedRoute: Route,
 ): Promise<{ channel: string; credential: string; origin?: string } | null> {
   const parsed = parsePath(new URL(request.url).pathname);
-  const expectedRoute = expectedRole === "caller" ? "call" : "executor";
   if (!parsed || parsed.route !== expectedRoute) return null;
   const claims = await verifyCredential(parsed.credential, env.RELAY_HMAC_KEY);
   if (!claims || claims.channel !== parsed.channel || claims.role !== expectedRole) return null;
@@ -78,6 +76,11 @@ function wellFormedOrigin(value: string): boolean {
   }
 }
 
+/** A credential bound to an Origin only works from that Origin (non-browser credentials carry none). */
+function originForbidden(request: Request, authenticated: { origin?: string }): boolean {
+  return authenticated.origin !== undefined && request.headers.get("origin") !== authenticated.origin;
+}
+
 /** Browsers cannot set WebSocket upgrade headers, so query params are accepted; headers serve non-browser executors. Never logged. */
 function executorParams(request: Request): { generation: string | null; takeover: boolean } {
   const url = new URL(request.url);
@@ -87,7 +90,7 @@ function executorParams(request: Request): { generation: string | null; takeover
 }
 
 async function bootstrap(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "POST") return notAllowed("POST");
+  if (request.method !== "POST") return methodNotAllowed("POST");
   const origin = request.headers.get("origin");
   if (origin !== null && !wellFormedOrigin(origin)) return errorResponse(400, "invalid_origin");
   const channel = randomBase64Url(32);
@@ -106,13 +109,11 @@ async function bootstrap(request: Request, env: Env): Promise<Response> {
 }
 
 async function routeExecutor(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "GET") return notAllowed("GET");
+  if (request.method !== "GET") return methodNotAllowed("GET");
   if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return errorResponse(426, "websocket_upgrade_required");
-  const authenticated = await authenticatedChannel(request, env, "executor");
+  const authenticated = await authenticatedChannel(request, env, "executor", "executor");
   if (!authenticated) return errorResponse(403, "invalid_credential");
-  if (authenticated.origin !== undefined && request.headers.get("origin") !== authenticated.origin) {
-    return errorResponse(403, "executor_origin_forbidden");
-  }
+  if (originForbidden(request, authenticated)) return errorResponse(403, "executor_origin_forbidden");
   const { generation, takeover } = executorParams(request);
   if (!generation || !EXECUTOR_GENERATION_PATTERN.test(generation)) return errorResponse(400, "invalid_executor_generation");
   const stub = env.RELAY_CHANNEL.getByName(authenticated.channel);
@@ -125,10 +126,8 @@ async function routeExecutor(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function routeCall(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "POST") return notAllowed("POST");
-  const authenticated = await authenticatedChannel(request, env, "caller");
-  if (!authenticated) return errorResponse(403, "invalid_credential");
+/** Post-auth half of a caller request, shared by the capability-URL and bearer routes. */
+async function forwardCall(request: Request, env: Env, channel: string): Promise<Response> {
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (!Number.isFinite(declaredLength) || declaredLength > DEFAULT_LIMITS.maxBodyBytes) return errorResponse(413, "request_too_large");
   const body = await request.arrayBuffer();
@@ -141,13 +140,34 @@ async function routeCall(request: Request, env: Env): Promise<Response> {
       body: base64UrlEncode(body),
     },
   };
-  const stub = env.RELAY_CHANNEL.getByName(authenticated.channel);
+  const stub = env.RELAY_CHANNEL.getByName(channel);
   return stub.fetch("https://relay.internal/call", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(relayRequest),
     signal: request.signal,
   });
+}
+
+async function routeCall(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const authenticated = await authenticatedChannel(request, env, "caller", "call");
+  if (!authenticated) return errorResponse(403, "invalid_credential");
+  return forwardCall(request, env, authenticated.channel);
+}
+
+async function routeBearerCall(request: Request, env: Env, channel: string): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const denied = await verifyBearer(request, channel, { key: env.RELAY_HMAC_KEY, origin: new URL(request.url).origin });
+  return denied ?? forwardCall(request, env, channel);
+}
+
+async function routePairing(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const authenticated = await authenticatedChannel(request, env, "executor", PAIRING_ROUTE);
+  if (!authenticated) return errorResponse(403, "invalid_credential");
+  if (originForbidden(request, authenticated)) return errorResponse(403, "executor_origin_forbidden");
+  return Response.json(await issuePairing(authenticated.channel, { key: env.RELAY_HMAC_KEY, origin: new URL(request.url).origin }));
 }
 
 export class RelayChannel extends DurableObject<Env> {
@@ -301,43 +321,19 @@ export class RelayChannel extends DurableObject<Env> {
   }
 }
 
-// Credentials live in the URL path and no cookies are used, so CORS is open (`*`, never Allow-Credentials).
-// No www-authenticate: the relay never challenges, and connector checks misread its mere presence as a sign-in request.
-const CORS_EXPOSE = "etag, last-modified, content-encoding";
-
-function withCors(response: Response): Response {
-  const headers = new Headers(response.headers);
-  for (const [name, value] of Object.entries(SECURITY_HEADERS)) headers.set(name, value);
-  headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-expose-headers", CORS_EXPOSE);
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
-
-/** Path shape only: no credential check, no channel lookup, so a preflight reveals nothing. */
-function preflight(request: Request): Response {
-  // Reflect requested headers (safe: no credentials are ever honoured; the relay forwards only an allow-list anyway),
-  // so browser MCP clients with extra headers are not broken by a stale fixed list.
-  const requested = request.headers.get("access-control-request-headers");
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": requested ?? "content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id",
-      "access-control-max-age": "600",
-      vary: "access-control-request-headers",
-    },
-  });
-}
-
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const auth = await handleAuth(request, { key: env.RELAY_HMAC_KEY, origin: url.origin });
+  if (auth) return auth;
   if (url.pathname === "/v1/channels") return request.method === "OPTIONS" ? preflight(request) : withCors(await bootstrap(request, env));
+  const bearer = parseBearerPath(url.pathname);
+  if (bearer) return request.method === "OPTIONS" ? preflight(request) : withCors(await routeBearerCall(request, env, bearer.channel));
   const parsed = parsePath(url.pathname);
   if (!parsed) return withCors(errorResponse(404, "not_found"));
   // Executor route is a WebSocket upgrade: no CORS (origin is bound per channel).
   if (parsed.route === "executor") return routeExecutor(request, env);
-  return request.method === "OPTIONS" ? preflight(request) : withCors(await routeCall(request, env));
+  if (request.method === "OPTIONS") return preflight(request);
+  return withCors(parsed.route === PAIRING_ROUTE ? await routePairing(request, env) : await routeCall(request, env));
 }
 
 export default {
