@@ -328,7 +328,7 @@ Same as Phase 1 (tick boxes, `npm run check`, commit referencing `(#12)` when in
 - [x] Full flow test green; every negative test green; legacy capability route test green.
 - [x] `grep -c "arrayBuffer" src/index.ts` shows the body-read exists once (single shared handler).
 - [x] README documents every route and all ceilings listed in section 7.
-- [ ] Contract reviewer confirms `protocol.ts` additions are what srs-web#447 needs (pairing route constant, response type) and that the file remains import-free.
+- [x] Contract reviewer confirms `protocol.ts` additions are what srs-web#447 needs (pairing route constant, response type) and that the file remains import-free. (lead, 2026-10-05: PairingResponse, PAIRING_ROUTE, pairingPath, connectorPath; srs-web derives the executor credential from its stored executorUrl.)
 
 #### Testing
 
