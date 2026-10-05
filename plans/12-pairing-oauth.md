@@ -258,17 +258,17 @@ Also list `PairingResponse`, `PAIRING_ROUTE`, `PAIRING_WINDOW_SECONDS`, `PAIRING
 
 #### Tasks
 
-- [ ] `src/credentials.ts`: widen `signCredential`, add `verifyClaims` (internal), `signTyped`, `verifyTyped`, `ClaimTyp`; re-express `signCredential`/`verifyCredential` on top; add the `typ === undefined` condition to `claimsAreValid`.
-- [ ] `src/protocol.ts`: add `PairingResponse`, `PAIRING_ROUTE`, `PAIRING_WINDOW_SECONDS`, `PAIRING_CODE_LENGTH`, `pairingPath`, `connectorPath`. No imports.
-- [ ] `vitest.config.ts`: switch to `test.projects` as specified in section 6.
-- [ ] `test/credentials.test.ts`: byte-compat fixtures and typed cases.
-- [ ] `test/oauth-portability.test.ts`: guard covering `src/credentials.ts` and the `protocol.ts` exports now; the `src/oauth.ts` entry is added in Phase 2 when the file exists.
+- [x] `src/credentials.ts`: widen `signCredential`, add `verifyClaims` (internal), `signTyped`, `verifyTyped`, `ClaimTyp`; re-express `signCredential`/`verifyCredential` on top; add the `typ === undefined` condition to `claimsAreValid`.
+- [x] `src/protocol.ts`: add `PairingResponse`, `PAIRING_ROUTE`, `PAIRING_WINDOW_SECONDS`, `PAIRING_CODE_LENGTH`, `pairingPath`, `connectorPath`. No imports.
+- [x] `vitest.config.ts`: switch to `test.projects` as specified in section 6.
+- [x] `test/credentials.test.ts`: byte-compat fixtures and typed cases.
+- [x] `test/oauth-portability.test.ts`: guard covering `src/credentials.ts` and the `protocol.ts` exports now; the `src/oauth.ts` entry is added in Phase 2 when the file exists.
 
 #### Acceptance Criteria
 
-- [ ] Fixture literals verify under `verifyCredential` and re-sign to identical bytes.
-- [ ] A `signTyped("access")` token fails `verifyCredential`; a capability token fails `verifyTyped`.
-- [ ] All 27 original tests still pass in the `workers` project; a Node-project smoke test runs outside workerd.
+- [x] Fixture literals verify under `verifyCredential` and re-sign to identical bytes.
+- [x] A `signTyped("access")` token fails `verifyCredential`; a capability token fails `verifyTyped`.
+- [x] All 27 original tests still pass in the `workers` project; a Node-project smoke test runs outside workerd.
 
 #### Testing
 
@@ -341,6 +341,11 @@ npm run check
 Same as Phase 1. Push the branch only; the owner reviews the diff before any PR.
 
 ---
+
+## Deviations
+
+- Shared HTTP helpers (`withCors`, `preflight`, `SECURITY_HEADERS`, `jsonResponse`, `errorResponse`, `methodNotAllowed`) live in a new portable `src/http.ts` (Fetch API only, no Cloudflare imports), imported by both `index.ts` and `oauth.ts`, instead of being exported from `oauth.ts` (lead decision). The portability guard covers `src/http.ts` too and allows `./http` as an import.
+- Phase 1: the node-project smoke test is `test/smoke.node.test.ts`; Phase 2 adds the real `oauth.node.test.ts`.
 
 ## Final Acceptance
 
