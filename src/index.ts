@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { signCredential, verifyCredential } from "./credentials";
-import { errorResponse, methodNotAllowed, preflight, withCors } from "./http";
+import { errorResponse, methodNotAllowed, preflight, readBody, withCors } from "./http";
 import { handleAuth, issuePairing, verifyBearer } from "./oauth";
 import {
   CLOSE_EXECUTOR_REPLACED,
@@ -130,8 +130,8 @@ async function routeExecutor(request: Request, env: Env): Promise<Response> {
 async function forwardCall(request: Request, env: Env, channel: string): Promise<Response> {
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (!Number.isFinite(declaredLength) || declaredLength > DEFAULT_LIMITS.maxBodyBytes) return errorResponse(413, "request_too_large");
-  const body = await request.arrayBuffer();
-  if (body.byteLength > DEFAULT_LIMITS.maxBodyBytes) return errorResponse(413, "request_too_large");
+  const body = await readBody(request, DEFAULT_LIMITS.maxBodyBytes);
+  if (!body) return errorResponse(413, "request_too_large");
   const relayRequest = {
     request: {
       method: "POST" as const,

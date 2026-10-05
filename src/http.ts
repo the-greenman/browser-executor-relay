@@ -50,3 +50,28 @@ export function preflight(request: Request, methods = "GET, POST, OPTIONS"): Res
     },
   });
 }
+
+/** Reads at most `max` bytes (counted on bytes read, not content-length), stopping as soon as the total exceeds it; null when exceeded. */
+export async function readBody(request: Request, max: number): Promise<Uint8Array | null> {
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}

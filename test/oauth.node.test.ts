@@ -416,3 +416,38 @@ describe("verifyBearer", () => {
     expect(asCode.status).toBe(400);
   });
 });
+
+describe("review hardening", () => {
+  it("rejects repeated authorize parameters", async () => {
+    const params = await authParams();
+    const res = await call(`/c/${CH}/oauth/authorize?${new URLSearchParams(params)}&state=again`);
+    expect(res.status).toBe(400);
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("token endpoint requires form encoding and checks resource before PKCE", async () => {
+    clock = T0;
+    const { params, authCode } = await fullFlow();
+    const base = { grant_type: "authorization_code", code: authCode, redirect_uri: REDIRECT, client_id: params.client_id };
+    const json = await call(`/c/${CH}/oauth/token`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(json.status).toBe(400);
+    expect(((await json.json()) as { error: string }).error).toBe("invalid_request");
+    const both = await tokenPost({ ...base, code_verifier: "w".repeat(50), resource: resource(CH2) });
+    expect(((await both.json()) as { error: string }).error).toBe("invalid_target");
+  });
+
+  it("registration rejects userinfo and look-alike localhost hosts", async () => {
+    for (const uri of ["https://user:pw@a.example/cb", "http://localhost.evil.com/cb", "http://127.0.0.1.evil.com/cb"]) {
+      expect((await registerClient([uri])).res.status).toBe(400);
+    }
+  });
+
+  it("verifyTyped rejects exp == now and non-integer or string exp", async () => {
+    const at = (exp: unknown) => signCredential({ typ: "access", exp }, KEY);
+    const { verifyTyped } = await import("../src/credentials");
+    expect(await verifyTyped(await at(T0 / 1000), "access", KEY, T0)).toBeNull();
+    expect(await verifyTyped(await at(T0 / 1000 + 1), "access", KEY, T0)).not.toBeNull();
+    expect(await verifyTyped(await at(T0 / 1000 + 1.5), "access", KEY, T0)).toBeNull();
+    expect(await verifyTyped(await at(String(T0 / 1000 + 100)), "access", KEY, T0)).toBeNull();
+  });
+});

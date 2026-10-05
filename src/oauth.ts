@@ -1,6 +1,6 @@
 // Stateless OAuth 2.1 authorization server + bearer verification. Fetch API + WebCrypto only: no Worker-only imports.
 import { signingKey, signTyped, verifyTyped } from "./credentials";
-import { jsonResponse, methodNotAllowed, preflight, SECURITY_HEADERS, withCors } from "./http";
+import { jsonResponse, methodNotAllowed, preflight, readBody, SECURITY_HEADERS, withCors } from "./http";
 import { base64UrlEncode, connectorPath, PAIRING_CODE_LENGTH, PAIRING_WINDOW_SECONDS, utf8Bytes } from "./protocol";
 import type { PairingResponse } from "./protocol";
 
@@ -90,29 +90,10 @@ export async function verifyBearer(request: Request, channel: string, opts: Auth
 
 // ---- helpers ------------------------------------------------------------------------------------------------------
 
-/** Reads at most `max` bytes (counted on bytes read, not content-length); null when exceeded. */
-async function readBody(request: Request, max = MAX_BODY): Promise<string | null> {
-  const reader = request.body?.getReader();
-  if (!reader) return "";
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > max) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
+/** Bounded text body; null when over MAX_BODY. */
+async function readText(request: Request): Promise<string | null> {
+  const bytes = await readBody(request, MAX_BODY);
+  return bytes && new TextDecoder().decode(bytes);
 }
 
 function oauthError(error: string, description: string, status = 400, headers?: HeadersInit): Response {
@@ -148,7 +129,7 @@ function validRedirectUri(value: unknown): value is string {
 // ---- register -----------------------------------------------------------------------------------------------------
 
 async function register(request: Request, opts: AuthOptions): Promise<Response> {
-  const text = await readBody(request);
+  const text = await readText(request);
   let body: unknown;
   try {
     body = text === null ? undefined : JSON.parse(text);
@@ -197,6 +178,7 @@ interface AuthRequest {
 
 /** The ONE validation used by GET and POST. Returns an error message, never a redirect. */
 async function validateAuthRequest(params: URLSearchParams, channel: string, opts: AuthOptions): Promise<AuthRequest | string> {
+  for (const key of new Set(params.keys())) if (params.getAll(key).length > 1) return "Invalid authorization request";
   const clientId = params.get("client_id") ?? "";
   const client = await verifyTyped(clientId, "client", opts.key, nowMs(opts));
   if (!client || !Array.isArray(client.redirect_uris)) return "Unknown or invalid client";
@@ -272,7 +254,7 @@ async function authorize(request: Request, channel: string, opts: AuthOptions): 
   }
   if (request.method !== "POST") return methodNotAllowed("GET, POST");
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/x-www-form-urlencoded")) return errorPage("Unsupported form encoding");
-  const text = await readBody(request);
+  const text = await readText(request);
   if (text === null) return errorPage("Request too large");
   const params = new URLSearchParams(text);
   const auth = await validateAuthRequest(params, channel, opts);
@@ -311,7 +293,10 @@ async function issueTokens(channel: string, clientId: string, opts: AuthOptions)
 
 async function token(request: Request, channel: string, opts: AuthOptions): Promise<Response> {
   const fail = (error: string, description: string): Response => oauthError(error, description, 400, NO_CACHE);
-  const text = await readBody(request);
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+    return fail("invalid_request", "Content-Type must be application/x-www-form-urlencoded.");
+  }
+  const text = await readText(request);
   if (text === null) return fail("invalid_request", "Request too large.");
   const params = new URLSearchParams(text);
   const now = nowMs(opts);
@@ -362,6 +347,7 @@ async function jsonEndpoint(request: Request, method: "GET" | "POST", run: () =>
 /** Returns null for any path it does not own, so the caller falls through. */
 export async function handleAuth(request: Request, opts: AuthOptions): Promise<Response | null> {
   const path = new URL(request.url).pathname;
+  if (!path.startsWith("/.well-known/") && !path.startsWith("/c/")) return null;
   const protectedResource = /^\/\.well-known\/oauth-protected-resource\/v1\/channels\/([^/]+)\/call$/.exec(path);
   const metadata = /^\/\.well-known\/oauth-authorization-server\/c\/([^/]+)$/.exec(path);
   const endpoint = /^\/c\/([^/]+)\/oauth\/(register|authorize|token)$/.exec(path);

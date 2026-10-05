@@ -11,13 +11,14 @@ const sources: Record<string, () => Promise<{ default: string }>> = {
 };
 
 const ALLOWED_IMPORTS = ["./credentials", "./http", "./protocol"];
-const FORBIDDEN = ["DurableObject", "WebSocketPair", "DurableObjectNamespace", "ExecutionContext", "caches"];
+const FORBIDDEN = ["DurableObject", "WebSocketPair", "DurableObjectNamespace", "ExecutionContext", "caches", "process", "Buffer", "require"];
 
 describe("portable modules", () => {
   it.each(Object.keys(sources))("%s imports only portable siblings and no Worker-only globals", async (name) => {
     const code = (await sources[name]()).default.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     const specifiers = [...code.matchAll(/(?:\bfrom\s+|\bimport\s+)["']([^"']+)["']/g)].map((m) => m[1]);
     for (const specifier of specifiers) expect(ALLOWED_IMPORTS).toContain(specifier);
+    expect(code).not.toMatch(/\bimport\s*\(|\brequire\s*\(|node:/);
     for (const identifier of FORBIDDEN) expect(code).not.toMatch(new RegExp(`\\b${identifier}\\b`));
   });
 

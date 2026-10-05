@@ -481,4 +481,22 @@ describe("pairing-code OAuth", () => {
     await expect(res.text()).resolves.toBe("legacy");
     env.ws.close();
   });
+
+  it("rejects an oversize chunked body without content-length on both call routes", async () => {
+    const env = await setup();
+    const { access_token } = (await (await authorizeAll(env)).token.json()) as { access_token: string };
+    const chunked = () =>
+      new ReadableStream({
+        start(c) {
+          for (let i = 0; i < 3; i++) c.enqueue(new Uint8Array(300 * 1024));
+          c.close();
+        },
+      });
+    const init = { method: "POST", duplex: "half" } as RequestInit;
+    const legacy = await fetch(env.b.callerUrl, { ...init, body: chunked() });
+    expect(legacy.status).toBe(413);
+    const bearer = await fetch(env.connector, { ...init, body: chunked(), headers: { authorization: `Bearer ${access_token}` } });
+    expect(bearer.status).toBe(413);
+    env.ws.close();
+  });
 });

@@ -106,6 +106,8 @@ Pairing code: `window = floor(unixSeconds / 600)`; `MAC = HMAC-SHA256(RELAY_HMAC
 
 Known ceilings:
 
+- `client_id` is unauthenticated open registration: it carries only the registered redirect URIs and name, and grants no trust. The authorize page shows the redirect host so a look-alike name is visible.
+- For real-client debugging: `GET`/`HEAD` on the bearer `/call` route returns `405` (not `401`); only `POST` is challenged.
 - An auth code can be replayed within its 120 s lifetime; PKCE (verifier) plus exact `redirect_uri` binding contain it.
 - No per-IP rate limit; a 50-bit code in a 10 to 20 minute window is not practically brute-forceable, but nothing throttles attempts. Add a platform rate-limit rule on `/c/*/oauth/authorize` (for example a Cloudflare rate-limiting rule).
 - Refresh tokens are not rotated or revoked individually (stateless); an old refresh token lives to its expiry.
