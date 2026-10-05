@@ -130,20 +130,26 @@ describe("dispatch and metadata", () => {
     const pr = (await call(`/.well-known/oauth-protected-resource/v1/channels/${CH}/call`));
     expect(await pr.json()).toEqual({
       resource: resource(),
-      authorization_servers: [`${ORIGIN}/c/${CH}`],
+      authorization_servers: [resource()],
       bearer_methods_supported: ["header"],
     });
     expect(pr.headers.get("access-control-allow-origin")).toBe("*");
     expect(pr.headers.get("cache-control")).toBe("no-store");
     expect(pr.headers.get("x-frame-options")).toBe("DENY");
-    const md = (await (await call(`/.well-known/oauth-authorization-server/c/${CH}`))!.json()) as Record<string, unknown>;
+    // Issuer is the connector URL; RFC 8414 path insertion puts the metadata under /.well-known/<suffix>/<issuer path>.
+    const md = (await (await call(`/.well-known/oauth-authorization-server/v1/channels/${CH}/call`))!.json()) as Record<string, unknown>;
     expect(md).toMatchObject({
-      issuer: `${ORIGIN}/c/${CH}`,
+      issuer: resource(),
       authorization_endpoint: `${ORIGIN}/c/${CH}/oauth/authorize`,
       token_endpoint: `${ORIGIN}/c/${CH}/oauth/token`,
       registration_endpoint: `${ORIGIN}/c/${CH}/oauth/register`,
       code_challenge_methods_supported: ["S256"],
     });
+  });
+
+  it("no longer serves AS metadata at the old /c/{ch} path or openid-configuration", async () => {
+    expect(await callOrNull(`/.well-known/oauth-authorization-server/c/${CH}`)).toBeNull();
+    expect(await callOrNull(`/.well-known/openid-configuration`)).toBeNull();
   });
 
   it("answers wrong methods with 405 and OPTIONS with 204", async () => {

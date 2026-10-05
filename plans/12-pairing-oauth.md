@@ -382,3 +382,7 @@ Same as Phase 1. Push the branch only; the owner reviews the diff before any PR.
 - Only https and loopback-http redirect_uris are accepted (custom schemes would break `form-action`).
 - Vitest `test.projects` was verified against vitest 4.1.11 / the installed Cloudflare plugin in this worktree (throwaway config, deleted).
 - No CI workflows exist in this repo; the gate is local `npm run check`.
+
+## Post-merge fix (#14)
+
+claude.ai derives the AS metadata URL from the resource path (anthropics/claude-ai-mcp#376), so the issuer is now the connector URL `<origin>/v1/channels/{ch}/call`. AS metadata is served at `/.well-known/oauth-authorization-server/v1/channels/{ch}/call` (RFC 8414 path insertion) and no longer at `/.well-known/oauth-authorization-server/c/{ch}`; the PRM advertises `authorization_servers: [<connector URL>]`. Endpoints stay at `/c/{ch}/oauth/{register,authorize,token}`. This supersedes the `/c/{ch}` issuer wording above.
