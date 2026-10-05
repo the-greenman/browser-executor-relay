@@ -59,7 +59,7 @@ limited to `cache-control`, `content-encoding`, `content-language`,
 `content-type`, `etag`, `last-modified`, and `www-authenticate`. It excludes
 credentials, cookies, forwarding headers, `origin`, `referer`, and hop-by-hop
 headers. The executor cannot set cookies or turn this into a transparent proxy.
-The relay then sets `cache-control: no-store` and `referrer-policy: no-referrer`
+The relay then sets `cache-control: no-store`, `referrer-policy: no-referrer` and `x-frame-options: DENY`
 on every bootstrap and caller response, overriding any executor `cache-control`.
 
 Unsupported caller methods return `405`; malformed credentials return `403`;
@@ -69,7 +69,50 @@ responses, not application-protocol responses.
 
 ## Browser callers / CORS
 
-Capability credentials live in the URL path and the relay never uses cookies, so CORS is permissive without credentials: every bootstrap and caller response, including errors, carries `Access-Control-Allow-Origin: *` (never `Allow-Credentials`) and `Access-Control-Expose-Headers` for the relayed response headers. `OPTIONS /v1/channels` and `OPTIONS /v1/channels/{channel}/call/{credential}` return `204` with `Allow-Methods: POST, OPTIONS`, `Allow-Headers` reflecting the browser's `Access-Control-Request-Headers` (default `content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id`) and `Max-Age: 600`. Preflight checks path shape only: no credential validation, no channel lookup. The executor WebSocket route has no CORS; its origin is bound per channel.
+Capability credentials live in the URL path (bearer tokens in the `Authorization` header) and the relay never uses cookies, so CORS is permissive without credentials: every bootstrap and caller response, including errors, carries `Access-Control-Allow-Origin: *` (never `Allow-Credentials`) and `Access-Control-Expose-Headers` for the relayed response headers and `www-authenticate`. The relay challenges only on the bearer `/call` route (see Auth). `OPTIONS /v1/channels`, `OPTIONS /v1/channels/{channel}/call`, `OPTIONS /v1/channels/{channel}/call/{credential}` and `OPTIONS /v1/channels/{channel}/pairing/{credential}` return `204` with `Allow-Methods: GET, POST, OPTIONS`, `Allow-Headers` reflecting the browser's `Access-Control-Request-Headers` (default `content-type, authorization, accept, mcp-protocol-version, mcp-session-id, last-event-id`) and `Max-Age: 600`. Preflight checks path shape only: no credential validation, no channel lookup. The executor WebSocket route has no CORS; its origin is bound per channel.
+
+## Auth: pairing-code OAuth for callers
+
+The capability-URL caller route (`/v1/channels/{ch}/call/{credential}`) remains for backward compatibility. Clients that only recognise OAuth sign-in use a stateless OAuth 2.1 authorization server (PKCE S256, RFC 9728/8414/7591) and a bearer route. Implemented in `src/oauth.ts` (Fetch API + WebCrypto only; Node 20+, Bun and Deno via a bundler) and mounted by `src/index.ts`; the relay itself stays application-agnostic.
+
+1. The editor (executor) calls `POST /v1/channels/{ch}/pairing/{executorCredential}` (executor Origin rules apply) and shows the returned `code` (`PairingResponse`) and `connectorUrl`.
+2. The caller `POST`s `connectorUrl` (`/v1/channels/{ch}/call`) without a token and gets `401` with `WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource/v1/channels/{ch}/call"` (plus `, error="invalid_token"` when a token was sent but is bad).
+3. It discovers the per-channel issuer `<origin>/c/{ch}` and registers a client.
+4. The user opens the authorize page and types the pairing code.
+5. The client exchanges the redirected code (with its PKCE verifier) for tokens.
+6. It calls `connectorUrl` with `Authorization: Bearer <access_token>`; the header is verified and never forwarded (request headers are an allow-list). It refreshes with `grant_type=refresh_token`.
+
+| Route | Behaviour |
+|---|---|
+| `GET /.well-known/oauth-protected-resource/v1/channels/{ch}/call` | RFC 9728 document (`resource`, `authorization_servers`) |
+| `GET /.well-known/oauth-authorization-server/c/{ch}` | RFC 8414 document; issuer is per channel, there is no global issuer |
+| `POST /c/{ch}/oauth/register` | RFC 7591; body at most 8192 bytes; 1 to 5 `redirect_uris` (https, or http on `localhost`/`127.0.0.1`/`[::1]`; no fragment); `201` with a signed `client_id`, no secret |
+| `GET/POST /c/{ch}/oauth/authorize` | HTML form (no CORS). Any validation failure is a `400` error page and never a redirect. A wrong code re-renders the form with `400`; a correct code is `302` to `redirect_uri` with `code` and `state`. `resource` is optional and must match the channel when present |
+| `POST /c/{ch}/oauth/token` | form-encoded; `authorization_code` and `refresh_token` grants; errors are `400` JSON (`invalid_request`, `invalid_grant`, `invalid_client`, `invalid_target`, `unsupported_grant_type`); responses carry `pragma: no-cache` |
+| `POST /v1/channels/{ch}/call` | bearer-protected call; `401` JSON `{"error":"unauthorized"}` (no header) or `{"error":"invalid_token"}` |
+
+Wrong methods get `405` with `allow`. JSON endpoints answer `OPTIONS` with `204` and send `access-control-allow-origin: *` (never allow-credentials).
+
+Everything is an HMAC-SHA256 signed claim under `RELAY_HMAC_KEY` in the credential wire format; a `typ` claim stops cross-use (capability credentials carry no `typ` and typed tokens are refused as capability credentials):
+
+| Artefact | Claims (in order) | Lifetime |
+|---|---|---|
+| `client_id` | `typ:"client", client_name, redirect_uris` | none |
+| auth code | `typ:"code", channel, client_id, redirect_uri, code_challenge, exp` | 120 s |
+| access token | `typ:"access", role:"caller", channel, exp` | 3600 s |
+| refresh token | `typ:"refresh", channel, client_id, exp` | 30 days |
+
+Pairing code: `window = floor(unixSeconds / 600)`; `MAC = HMAC-SHA256(RELAY_HMAC_KEY, utf8("pair|" + channel + "|" + window))`; the first 7 bytes read big-endian, top 50 bits, as 10 Crockford base32 characters (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), displayed `XXXXX-XXXXX`. Input is trimmed, uppercased, stripped of `-` and whitespace, with `I`/`L` read as `1` and `O` as `0`. The current and previous window are accepted (10 to 20 minutes), compared in constant time.
+
+Known ceilings:
+
+- `client_id` is unauthenticated open registration: it carries only the registered redirect URIs and name, and grants no trust. The authorize page shows the redirect host so a look-alike name is visible.
+- For real-client debugging: `GET`/`HEAD` on the bearer `/call` route returns `405` (not `401`); only `POST` is challenged.
+- An auth code can be replayed within its 120 s lifetime; PKCE (verifier) plus exact `redirect_uri` binding contain it.
+- No per-IP rate limit; a 50-bit code in a 10 to 20 minute window is not practically brute-forceable, but nothing throttles attempts. Add a platform rate-limit rule on `/c/*/oauth/authorize` (for example a Cloudflare rate-limiting rule).
+- Refresh tokens are not rotated or revoked individually (stateless); an old refresh token lives to its expiry.
+- Revocation: rotating the channel in the client mints a new channel, so old tokens reach no executor; a global kill is rotating `RELAY_HMAC_KEY` (which also invalidates all capability URLs).
+- The pairing code is deterministic per (channel, window): re-requesting returns the same code until the window rolls, so clients must not offer a "new code" action.
 
 ## Protocol entry for executor implementers
 
@@ -79,6 +122,7 @@ Capability credentials live in the URL path and the relay never uses cookies, so
 - `CLOSE_EXECUTOR_REPLACED` (`4002`): the close code an executor receives when a takeover replaces it.
 - `EXECUTOR_GENERATION_PARAM` / `EXECUTOR_TAKEOVER_PARAM` (`generation`, `takeover`), the header equivalents `EXECUTOR_GENERATION_HEADER` / `EXECUTOR_TAKEOVER_HEADER`, and `EXECUTOR_GENERATION_PATTERN`.
 - `executorSocketUrl(executorUrl, generation, takeover?)` and `newExecutorGeneration()` to connect an executor.
+- `PairingResponse`, `PAIRING_ROUTE`, `PAIRING_WINDOW_SECONDS`, `PAIRING_CODE_LENGTH`, `pairingPath(channel, executorCredential)` and `connectorPath(channel)` for the pairing endpoint.
 - Codec: `base64UrlEncode`, `base64UrlDecode` (returns `null` on invalid input, never throws), `randomBase64Url`, `utf8Bytes`.
 
 ## State and security

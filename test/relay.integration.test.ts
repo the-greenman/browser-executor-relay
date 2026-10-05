@@ -1,7 +1,7 @@
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { base64UrlDecode, base64UrlEncode } from "../src/protocol";
-import type { ChannelBootstrap, RelayRequestFrame } from "../src/protocol";
+import { base64UrlDecode, base64UrlEncode, connectorPath, pairingPath } from "../src/protocol";
+import type { ChannelBootstrap, PairingResponse, RelayRequestFrame } from "../src/protocol";
 
 const worker = exports as unknown as {
   default: { fetch(input: RequestInfo, init?: RequestInit): Promise<Response> };
@@ -212,7 +212,7 @@ describe("CORS for browser callers", () => {
       expect(r.status).toBe(204);
       expect(r.headers.get("access-control-allow-origin")).toBe("*");
       expect(r.headers.get("access-control-allow-credentials")).toBeNull();
-      expect(r.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
+      expect(r.headers.get("access-control-allow-methods")).toBe("GET, POST, OPTIONS");
       expect(r.headers.get("access-control-allow-headers")).toBe("content-type, x-custom");
       expect(r.headers.get("access-control-max-age")).toBe("600");
     }
@@ -239,5 +239,264 @@ describe("CORS for browser callers", () => {
     const exPost = await worker.default.fetch(b.executorUrl.replace("wss:", "https:"), { method: "POST" });
     expect(exPost.status).toBe(405);
     expect(exPost.headers.get("cache-control")).toBe("no-store");
+  });
+});
+
+describe("pairing-code OAuth", () => {
+  const ORIGIN = "https://relay.example";
+  const APP = "https://app.example";
+  const REDIRECT = "http://127.0.0.1:8765/cb";
+  const VERIFIER = "v".repeat(60);
+  const fetch = (url: string, init?: RequestInit) => worker.default.fetch(url, init);
+  const form = (fields: Record<string, string>): RequestInit => ({
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(fields),
+  });
+
+  /** Fresh channel with an echo executor (replies with the request body, text/plain). */
+  async function setup() {
+    const b = (await (await fetch(`${ORIGIN}/v1/channels`, { method: "POST", headers: { origin: APP } })).json()) as ChannelBootstrap;
+    const executorCred = b.executorUrl.split("/").pop()!;
+    const up = await fetch(b.executorUrl.replace("wss:", "https:"), {
+      headers: { upgrade: "websocket", origin: APP, "x-relay-executor-generation": "test-executor-generation-0100" },
+    });
+    const ws = up.webSocket!;
+    ws.accept();
+    const frames: RelayRequestFrame[] = [];
+    ws.addEventListener("message", (event) => {
+      const frame = JSON.parse(event.data as string) as RelayRequestFrame;
+      frames.push(frame);
+      ws.send(
+        JSON.stringify({
+          version: 1,
+          type: "response",
+          requestId: frame.requestId,
+          executorGeneration: frame.executorGeneration,
+          response: { status: 200, headers: { "content-type": "text/plain" }, body: frame.request.body },
+        }),
+      );
+    });
+    const connector = `${ORIGIN}${connectorPath(b.channel)}`;
+    const pair = () => fetch(`${ORIGIN}${pairingPath(b.channel, executorCred)}`, { method: "POST", headers: { origin: APP } });
+    const issuer = `${ORIGIN}/c/${b.channel}`;
+    return { b, ws, frames, executorCred, connector, pair, issuer };
+  }
+
+  async function challenge(verifier: string): Promise<string> {
+    return base64UrlEncode(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  }
+
+  /** Register + authorize + token for a channel; returns the token response body. */
+  async function authorizeAll(env: Awaited<ReturnType<typeof setup>>) {
+    const reg = await fetch(`${env.issuer}/oauth/register`, {
+      method: "POST",
+      body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: "Test Client" }),
+    });
+    const { client_id } = (await reg.json()) as { client_id: string };
+    const { code } = (await (await env.pair()).json()) as PairingResponse;
+    const fields = {
+      client_id,
+      redirect_uri: REDIRECT,
+      response_type: "code",
+      state: "xyz",
+      code_challenge: await challenge(VERIFIER),
+      code_challenge_method: "S256",
+      resource: env.connector,
+    };
+    const redirected = await fetch(`${env.issuer}/oauth/authorize`, { ...form({ ...fields, pairing_code: code }), redirect: "manual" });
+    const location = new URL(redirected.headers.get("location")!);
+    const token = await fetch(
+      `${env.issuer}/oauth/token`,
+      form({ grant_type: "authorization_code", code: location.searchParams.get("code")!, redirect_uri: REDIRECT, client_id, code_verifier: VERIFIER }),
+    );
+    return { client_id, fields, code, redirected, location, token };
+  }
+
+  const callWith = (url: string, token: string, body = "hello") =>
+    fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}` }, body });
+
+  it("runs the full pair, challenge, metadata, register, authorize, token, call and refresh flow", async () => {
+    const env = await setup();
+    const { b, connector, issuer } = env;
+
+    const paired = await env.pair();
+    expect(paired.status).toBe(200);
+    const pairing = (await paired.json()) as PairingResponse;
+    expect(pairing.code).toMatch(/^[0-9A-Z]{5}-[0-9A-Z]{5}$/);
+    expect(pairing.connectorUrl).toBe(connector);
+    expect(pairing.expiresAt).toBeGreaterThan(Date.now());
+    expect(paired.headers.get("access-control-allow-origin")).toBe("*");
+    expect(paired.headers.get("cache-control")).toBe("no-store");
+
+    const none = await fetch(connector, { method: "POST", body: "x" });
+    const resourceMetadata = `${ORIGIN}/.well-known/oauth-protected-resource/v1/channels/${b.channel}/call`;
+    expect(none.status).toBe(401);
+    expect(none.headers.get("www-authenticate")).toBe(`Bearer resource_metadata="${resourceMetadata}"`);
+    expect(none.headers.get("access-control-allow-origin")).toBe("*");
+    expect(none.headers.get("access-control-expose-headers")).toContain("www-authenticate");
+    const junk = await callWith(connector, "junk");
+    expect(junk.status).toBe(401);
+    expect(junk.headers.get("www-authenticate")).toBe(`Bearer resource_metadata="${resourceMetadata}", error="invalid_token"`);
+
+    const pr = (await (await fetch(resourceMetadata)).json()) as { resource: string; authorization_servers: string[] };
+    expect(pr.resource).toBe(connector);
+    expect(pr.authorization_servers).toEqual([issuer]);
+    const md = (await (await fetch(`${ORIGIN}/.well-known/oauth-authorization-server/c/${b.channel}`)).json()) as Record<string, unknown>;
+    expect(md).toMatchObject({
+      issuer,
+      authorization_endpoint: `${issuer}/oauth/authorize`,
+      token_endpoint: `${issuer}/oauth/token`,
+      registration_endpoint: `${issuer}/oauth/register`,
+      code_challenge_methods_supported: ["S256"],
+    });
+
+    const reg = await fetch(`${issuer}/oauth/register`, {
+      method: "POST",
+      body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: "Test Client" }),
+    });
+    expect(reg.status).toBe(201);
+    const { client_id } = (await reg.json()) as { client_id: string };
+    const params = {
+      client_id,
+      redirect_uri: REDIRECT,
+      response_type: "code",
+      state: "xyz",
+      code_challenge: await challenge(VERIFIER),
+      code_challenge_method: "S256",
+    };
+    for (const extra of [{ resource: connector }, {} as Record<string, string>]) {
+      const page = await fetch(`${issuer}/oauth/authorize?${new URLSearchParams({ ...params, ...extra })}`);
+      expect(page.status).toBe(200);
+      const html = await page.text();
+      expect(html).toContain("Test Client");
+      expect(html).toContain("127.0.0.1:8765");
+      expect(html).toContain('name="pairing_code"');
+      expect(page.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    }
+
+    const redirected = await fetch(`${issuer}/oauth/authorize`, {
+      ...form({ ...params, resource: connector, pairing_code: pairing.code }),
+      redirect: "manual",
+    });
+    expect(redirected.status).toBe(302);
+    const location = new URL(redirected.headers.get("location")!);
+    expect(location.origin + location.pathname).toBe(REDIRECT);
+    expect(location.searchParams.get("state")).toBe("xyz");
+
+    const tokenRes = await fetch(
+      `${issuer}/oauth/token`,
+      form({ grant_type: "authorization_code", code: location.searchParams.get("code")!, redirect_uri: REDIRECT, client_id, code_verifier: VERIFIER }),
+    );
+    expect(tokenRes.status).toBe(200);
+    const tokens = (await tokenRes.json()) as Record<string, string | number>;
+    expect(tokens).toMatchObject({ token_type: "Bearer", expires_in: 3600 });
+
+    const called = await callWith(connector, tokens.access_token as string);
+    expect(called.status).toBe(200);
+    await expect(called.text()).resolves.toBe("hello");
+    expect(env.frames.at(-1)!.request.headers).not.toHaveProperty("authorization");
+
+    const refreshed = await fetch(`${issuer}/oauth/token`, form({ grant_type: "refresh_token", refresh_token: tokens.refresh_token as string }));
+    expect(refreshed.status).toBe(200);
+    const again = await callWith(connector, ((await refreshed.json()) as { access_token: string }).access_token);
+    await expect(again.text()).resolves.toBe("hello");
+    env.ws.close();
+  });
+
+  it("guards the pairing endpoint", async () => {
+    const env = await setup();
+    const url = `${ORIGIN}${pairingPath(env.b.channel, env.executorCred)}`;
+    const noOrigin = await fetch(url, { method: "POST" });
+    expect(noOrigin.status).toBe(403);
+    await expect(noOrigin.json()).resolves.toEqual({ error: "executor_origin_forbidden" });
+    expect((await fetch(url, { method: "POST", headers: { origin: "https://other.example" } })).status).toBe(403);
+    const callerCred = env.b.callerUrl.split("/").pop()!;
+    const asCaller = await fetch(`${ORIGIN}${pairingPath(env.b.channel, callerCred)}`, { method: "POST", headers: { origin: APP } });
+    expect(asCaller.status).toBe(403);
+    await expect(asCaller.json()).resolves.toEqual({ error: "invalid_credential" });
+    expect((await fetch(url, { headers: { origin: APP } })).status).toBe(405);
+    expect((await fetch(url, { method: "OPTIONS" })).status).toBe(204);
+    env.ws.close();
+  });
+
+  it("rejects a wrong pairing code without redirecting", async () => {
+    const env = await setup();
+    const { client_id } = (await (await fetch(`${env.issuer}/oauth/register`, { method: "POST", body: JSON.stringify({ redirect_uris: [REDIRECT] }) })).json()) as { client_id: string };
+    const res = await fetch(`${env.issuer}/oauth/authorize`, {
+      ...form({ client_id, redirect_uri: REDIRECT, response_type: "code", code_challenge: await challenge(VERIFIER), code_challenge_method: "S256", pairing_code: "00000-00000" }),
+      redirect: "manual",
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get("location")).toBeNull();
+    env.ws.close();
+  });
+
+  it("rejects a wrong redirect_uri at authorize with an error page, and wrong verifier or redirect_uri at token", async () => {
+    const env = await setup();
+    const flow = await authorizeAll(env);
+    const bad = await fetch(
+      `${env.issuer}/oauth/authorize?${new URLSearchParams({ ...flow.fields, redirect_uri: "http://127.0.0.1:8765/other" })}`,
+      { redirect: "manual" },
+    );
+    expect(bad.status).toBe(400);
+    expect(bad.headers.get("location")).toBeNull();
+
+    const { code } = (await (await env.pair()).json()) as PairingResponse;
+    const redirected = await fetch(`${env.issuer}/oauth/authorize`, { ...form({ ...flow.fields, pairing_code: code }), redirect: "manual" });
+    const authCode = new URL(redirected.headers.get("location")!).searchParams.get("code")!;
+    const exchange = (over: Record<string, string>) =>
+      fetch(`${env.issuer}/oauth/token`, form({ grant_type: "authorization_code", code: authCode, redirect_uri: REDIRECT, client_id: flow.client_id, code_verifier: VERIFIER, ...over }));
+    const wrongVerifier = await exchange({ code_verifier: "w".repeat(60) });
+    expect(wrongVerifier.status).toBe(400);
+    expect(((await wrongVerifier.json()) as { error: string }).error).toBe("invalid_grant");
+    const wrongRedirect = await exchange({ redirect_uri: "http://127.0.0.1:8765/other" });
+    expect(wrongRedirect.status).toBe(400);
+    expect(((await wrongRedirect.json()) as { error: string }).error).toBe("invalid_grant");
+    env.ws.close();
+  });
+
+  it("keeps token types apart and binds access tokens to their channel", async () => {
+    const env = await setup();
+    const tokens = (await (await authorizeAll(env)).token.json()) as { access_token: string; refresh_token: string };
+
+    const accessAsRefresh = await fetch(`${env.issuer}/oauth/token`, form({ grant_type: "refresh_token", refresh_token: tokens.access_token }));
+    expect(accessAsRefresh.status).toBe(400);
+    expect(((await accessAsRefresh.json()) as { error: string }).error).toBe("invalid_grant");
+    expect((await callWith(env.connector, tokens.refresh_token)).status).toBe(401);
+
+    const callerCred = env.b.callerUrl.split("/").pop()!;
+    expect((await callWith(env.connector, callerCred)).status).toBe(401);
+
+    const other = await setup();
+    expect((await callWith(other.connector, tokens.access_token)).status).toBe(401);
+    env.ws.close();
+    other.ws.close();
+  });
+
+  it("leaves the capability-URL route working", async () => {
+    const env = await setup();
+    const res = await fetch(env.b.callerUrl, { method: "POST", body: "legacy" });
+    expect(res.status).toBe(200);
+    await expect(res.text()).resolves.toBe("legacy");
+    env.ws.close();
+  });
+
+  it("rejects an oversize chunked body without content-length on both call routes", async () => {
+    const env = await setup();
+    const { access_token } = (await (await authorizeAll(env)).token.json()) as { access_token: string };
+    const chunked = () =>
+      new ReadableStream({
+        start(c) {
+          for (let i = 0; i < 3; i++) c.enqueue(new Uint8Array(300 * 1024));
+          c.close();
+        },
+      });
+    const init = { method: "POST", duplex: "half" } as RequestInit;
+    const legacy = await fetch(env.b.callerUrl, { ...init, body: chunked() });
+    expect(legacy.status).toBe(413);
+    const bearer = await fetch(env.connector, { ...init, body: chunked(), headers: { authorization: `Bearer ${access_token}` } });
+    expect(bearer.status).toBe(413);
+    env.ws.close();
   });
 });
