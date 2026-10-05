@@ -291,14 +291,14 @@ npm run check
 
 #### Tasks
 
-- [ ] Create `src/oauth.ts` with `handleAuth`, `verifyBearer`, `issuePairing`, pairing-code helpers, `validateAuthRequest`, HTML renderers, per section 4. Imports allowed: `./credentials`, `./protocol` only.
-- [ ] `test/oauth.node.test.ts` per section 6.
-- [ ] Extend `test/oauth-portability.test.ts` to cover `src/oauth.ts`.
+- [x] Create `src/oauth.ts` with `handleAuth`, `verifyBearer`, `issuePairing`, pairing-code helpers, `validateAuthRequest`, HTML renderers, per section 4. Imports allowed: `./credentials`, `./protocol` only.
+- [x] `test/oauth.node.test.ts` per section 6.
+- [x] Extend `test/oauth-portability.test.ts` to cover `src/oauth.ts`.
 
 #### Acceptance Criteria
 
-- [ ] Every unit-test group in section 6 present and green in the `node` project.
-- [ ] Guard test green for `oauth.ts` and `credentials.ts`.
+- [x] Every unit-test group in section 6 present and green in the `node` project.
+- [x] Guard test green for `oauth.ts` and `credentials.ts`.
 - [ ] Security reviewer signs off: constant-time compares for pairing code and PKCE, no reflection of unescaped input, no redirect on any validation failure, `typ` checked on every verify.
 
 #### Testing
@@ -345,6 +345,8 @@ Same as Phase 1. Push the branch only; the owner reviews the diff before any PR.
 ## Deviations
 
 - Shared HTTP helpers (`withCors`, `preflight`, `SECURITY_HEADERS`, `jsonResponse`, `errorResponse`, `methodNotAllowed`) live in a new portable `src/http.ts` (Fetch API only, no Cloudflare imports), imported by both `index.ts` and `oauth.ts`, instead of being exported from `oauth.ts` (lead decision). The portability guard covers `src/http.ts` too and allows `./http` as an import.
+- Phase 2: also added `src/http.ts` (see above) and exported `signingKey` from `credentials.ts` for the pairing HMAC; `oauth.ts` additionally exports `normalisePairingCode` and `constantTimeEqual` for tests. `preflight(request, methods?)` takes an optional allow-methods string so JSON OAuth endpoints answer `GET|POST, OPTIONS`; its allow-headers default is the existing list plus `authorization` (reflected when requested), not the narrower `content-type, authorization`.
+- Phase 2: the security-reviewer sign-off criterion is left unticked (reviewer agents are outside this worker's scope).
 - Phase 1: the node-project smoke test is `test/smoke.node.test.ts`; Phase 2 adds the real `oauth.node.test.ts`.
 
 ## Final Acceptance

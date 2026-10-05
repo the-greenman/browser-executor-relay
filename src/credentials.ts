@@ -3,7 +3,7 @@ import type { RelayCredentialClaims } from "./protocol";
 
 const encoder = new TextEncoder();
 
-async function signingKey(secret: string): Promise<CryptoKey> {
+export async function signingKey(secret: string): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),

@@ -4,6 +4,10 @@ import * as protocol from "../src/protocol";
 const sources: Record<string, () => Promise<{ default: string }>> = {
   // @ts-expect-error vite ?raw import has no type declaration
   "src/credentials.ts": () => import("../src/credentials.ts?raw"),
+  // @ts-expect-error vite ?raw import has no type declaration
+  "src/http.ts": () => import("../src/http.ts?raw"),
+  // @ts-expect-error vite ?raw import has no type declaration
+  "src/oauth.ts": () => import("../src/oauth.ts?raw"),
 };
 
 const ALLOWED_IMPORTS = ["./credentials", "./http", "./protocol"];
