@@ -341,10 +341,17 @@ describe("pairing-code OAuth", () => {
 
     const pr = (await (await fetch(resourceMetadata)).json()) as { resource: string; authorization_servers: string[] };
     expect(pr.resource).toBe(connector);
-    expect(pr.authorization_servers).toEqual([issuer]);
-    const md = (await (await fetch(`${ORIGIN}/.well-known/oauth-authorization-server/c/${b.channel}`)).json()) as Record<string, unknown>;
+    expect(pr.authorization_servers).toEqual([connector]);
+    // Discover via the PRM issuer and via the claude.ai-style resource-path derivation: both are the same URL.
+    const viaPrm = new URL(pr.authorization_servers[0]!);
+    const asMetadata = `${viaPrm.origin}/.well-known/oauth-authorization-server${viaPrm.pathname}`;
+    const viaResource = `${ORIGIN}/.well-known/oauth-authorization-server${new URL(pr.resource).pathname}`;
+    expect(asMetadata).toBe(viaResource);
+    expect((await fetch(`${ORIGIN}/.well-known/oauth-authorization-server/c/${b.channel}`)).status).toBe(404);
+    expect((await fetch(`${ORIGIN}/.well-known/openid-configuration`)).status).toBe(404);
+    const md = (await (await fetch(asMetadata)).json()) as Record<string, unknown>;
     expect(md).toMatchObject({
-      issuer,
+      issuer: connector,
       authorization_endpoint: `${issuer}/oauth/authorize`,
       token_endpoint: `${issuer}/oauth/token`,
       registration_endpoint: `${issuer}/oauth/register`,

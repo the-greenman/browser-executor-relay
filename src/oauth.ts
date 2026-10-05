@@ -349,7 +349,7 @@ export async function handleAuth(request: Request, opts: AuthOptions): Promise<R
   const path = new URL(request.url).pathname;
   if (!path.startsWith("/.well-known/") && !path.startsWith("/c/")) return null;
   const protectedResource = /^\/\.well-known\/oauth-protected-resource\/v1\/channels\/([^/]+)\/call$/.exec(path);
-  const metadata = /^\/\.well-known\/oauth-authorization-server\/c\/([^/]+)$/.exec(path);
+  const metadata = /^\/\.well-known\/oauth-authorization-server\/v1\/channels\/([^/]+)\/call$/.exec(path);
   const endpoint = /^\/c\/([^/]+)\/oauth\/(register|authorize|token)$/.exec(path);
   const channel = (protectedResource ?? metadata ?? endpoint)?.[1];
   if (!channel || !CHANNEL.test(channel)) return null;
@@ -358,19 +358,20 @@ export async function handleAuth(request: Request, opts: AuthOptions): Promise<R
     return jsonEndpoint(request, "GET", () =>
       jsonResponse({
         resource: opts.origin + connectorPath(channel),
-        authorization_servers: [`${opts.origin}/c/${channel}`],
+        authorization_servers: [opts.origin + connectorPath(channel)],
         bearer_methods_supported: ["header"],
       }),
     );
   }
   if (metadata) {
-    const issuer = `${opts.origin}/c/${channel}`;
+    // The issuer is the connector URL (RFC 8414 path insertion); the endpoints stay under /c/{ch}.
+    const base = `${opts.origin}/c/${channel}/oauth`;
     return jsonEndpoint(request, "GET", () =>
       jsonResponse({
-        issuer,
-        authorization_endpoint: `${issuer}/oauth/authorize`,
-        token_endpoint: `${issuer}/oauth/token`,
-        registration_endpoint: `${issuer}/oauth/register`,
+        issuer: opts.origin + connectorPath(channel),
+        authorization_endpoint: `${base}/authorize`,
+        token_endpoint: `${base}/token`,
+        registration_endpoint: `${base}/register`,
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "refresh_token"],
         code_challenge_methods_supported: ["S256"],

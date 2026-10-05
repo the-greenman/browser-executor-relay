@@ -77,7 +77,7 @@ The capability-URL caller route (`/v1/channels/{ch}/call/{credential}`) remains 
 
 1. The editor (executor) calls `POST /v1/channels/{ch}/pairing/{executorCredential}` (executor Origin rules apply) and shows the returned `code` (`PairingResponse`) and `connectorUrl`.
 2. The caller `POST`s `connectorUrl` (`/v1/channels/{ch}/call`) without a token and gets `401` with `WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource/v1/channels/{ch}/call"` (plus `, error="invalid_token"` when a token was sent but is bad).
-3. It discovers the per-channel issuer `<origin>/c/{ch}` and registers a client.
+3. It discovers the per-channel issuer, which is the connector URL `<origin>/v1/channels/{ch}/call`, fetches its metadata from `/.well-known/oauth-authorization-server/v1/channels/{ch}/call` and registers a client. (Some clients derive the AS metadata URL from the resource path rather than the protected-resource document, see anthropics/claude-ai-mcp#376, so the issuer is the connector URL.)
 4. The user opens the authorize page and types the pairing code.
 5. The client exchanges the redirected code (with its PKCE verifier) for tokens.
 6. It calls `connectorUrl` with `Authorization: Bearer <access_token>`; the header is verified and never forwarded (request headers are an allow-list). It refreshes with `grant_type=refresh_token`.
@@ -85,7 +85,7 @@ The capability-URL caller route (`/v1/channels/{ch}/call/{credential}`) remains 
 | Route | Behaviour |
 |---|---|
 | `GET /.well-known/oauth-protected-resource/v1/channels/{ch}/call` | RFC 9728 document (`resource`, `authorization_servers`) |
-| `GET /.well-known/oauth-authorization-server/c/{ch}` | RFC 8414 document; issuer is per channel, there is no global issuer |
+| `GET /.well-known/oauth-authorization-server/v1/channels/{ch}/call` | RFC 8414 document (path insertion); issuer is the connector URL, per channel, there is no global issuer; endpoints below stay under `/c/{ch}/oauth/` |
 | `POST /c/{ch}/oauth/register` | RFC 7591; body at most 8192 bytes; 1 to 5 `redirect_uris` (https, or http on `localhost`/`127.0.0.1`/`[::1]`; no fragment); `201` with a signed `client_id`, no secret |
 | `GET/POST /c/{ch}/oauth/authorize` | HTML form (no CORS). Any validation failure is a `400` error page and never a redirect. A wrong code re-renders the form with `400`; a correct code is `302` to `redirect_uri` with `code` and `state`. `resource` is optional and must match the channel when present |
 | `POST /c/{ch}/oauth/token` | form-encoded; `authorization_code` and `refresh_token` grants; errors are `400` JSON (`invalid_request`, `invalid_grant`, `invalid_client`, `invalid_target`, `unsupported_grant_type`); responses carry `pragma: no-cache` |
